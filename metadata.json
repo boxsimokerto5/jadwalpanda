@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Jadwal Shif & Pengingat Wali Asuh",
+  "description": "Aplikasi manajemen jadwal shif otomatis, notifikasi pengingat tugas harian, monitoring petugas jaga, rekam medis, dan portofolio siswa asuh real-time.",
+  "requestFramePermissions": ["notifications"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

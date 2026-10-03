@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Filter for clean presentation -->
+    <clipPath id="circleClip">
+      <circle cx="256" cy="256" r="256" />
+    </clipPath>
+  </defs>
+
+  <!-- Clean White Canvas -->
+  <rect width="512" height="512" fill="#FFFFFF" rx="64" />
+
+  <g transform="translate(18, 12)">
+    <!-- 1. Roof of the House -->
+    <!-- Left slope going up to the ridge, right slope going down to meet the pen -->
+    <path
+      d="M 108 248 L 236 156 L 340 230"
+      fill="none"
+      stroke="#1E1E1E"
+      stroke-width="24"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+
+    <!-- 2. The Vertical Pen / Fountain Pen on the Right -->
+    <!-- Pen Clip -->
+    <path
+      d="M 353 162 L 361 162 L 361 204 L 353 204"
+      fill="none"
+      stroke="#1E1E1E"
+      stroke-width="5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+
+    <!-- Pen Body Upper (Black Cap) -->
+    <rect
+      x="332"
+      y="152"
+      width="22"
+      height="46"
+      rx="3"
+      fill="#1E1E1E"
+    />
+
+    <!-- Pen Body Middle (Red Barrel) -->
+    <rect
+      x="332"
+      y="198"
+      width="22"
+      height="68"
+      fill="#D32F2F"
+    />
+
+    <!-- Pen Lower Ring (Black) -->
+    <rect
+      x="332"
+      y="266"
+      width="22"
+      height="10"
+      fill="#1E1E1E"
+    />
+
+    <!-- Pen Nib / Tip (Red Point) -->
+    <polygon
+      points="332,276 354,276 343,322"
+      fill="#D32F2F"
+    />
+    <!-- Pen Nib Fine Tip (Dark Accent) -->
+    <polygon
+      points="341,316 345,316 343,326"
+      fill="#1E1E1E"
+    />
+
+    <!-- 3. Text "Sekolah Rakyat" -->
+    <!-- Line 1: Sekolah -->
+    <text
+      x="222"
+      y="272"
+      text-anchor="middle"
+      font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+      font-size="49"
+      font-weight="800"
+      fill="#1E1E1E"
+      letter-spacing="-0.5"
+    >Sekolah</text>
+
+    <!-- Red Smile Curve between Sekolah and Rakyat -->
+    <path
+      d="M 224 286 Q 237 299 250 286"
+      fill="none"
+      stroke="#D32F2F"
+      stroke-width="6.5"
+      stroke-linecap="round"
+    />
+
+    <!-- Line 2: Rakyat -->
+    <text
+      x="222"
+      y="336"
+      text-anchor="middle"
+      font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+      font-size="49"
+      font-weight="800"
+      fill="#1E1E1E"
+      letter-spacing="-0.5"
+    >Rakyat</text>
+
+    <!-- 4. Bottom Foundation Bar (Curved Arch, Red with Black Trim) -->
+    <!-- Black Outline/Base -->
+    <path
+      d="M 98 376 Q 224 358 350 376"
+      fill="none"
+      stroke="#1E1E1E"
+      stroke-width="20"
+      stroke-linecap="round"
+    />
+    <!-- Red Core Fill -->
+    <path
+      d="M 103 376 Q 224 360 345 376"
+      fill="none"
+      stroke="#D32F2F"
+      stroke-width="13"
+      stroke-linecap="round"
+    />
+  </g>
+</svg>

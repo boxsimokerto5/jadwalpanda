@@ -1,0 +1,253 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradient: Deep Night Teal to Emerald -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#07191E" />
+      <stop offset="45%" stop-color="#0A332C" />
+      <stop offset="85%" stop-color="#04231E" />
+      <stop offset="100%" stop-color="#021312" />
+    </linearGradient>
+
+    <!-- Metallic Gold / Warm Amber Gradient -->
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFBEB" />
+      <stop offset="25%" stop-color="#FCD34D" />
+      <stop offset="60%" stop-color="#F59E0B" />
+      <stop offset="90%" stop-color="#D97706" />
+      <stop offset="100%" stop-color="#B45309" />
+    </linearGradient>
+
+    <!-- Vibrant Emerald Gradient -->
+    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6EE7B7" />
+      <stop offset="40%" stop-color="#10B981" />
+      <stop offset="100%" stop-color="#047857" />
+    </linearGradient>
+
+    <!-- Cyan Shift / Night Accent -->
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#BAE6FD" />
+      <stop offset="50%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+
+    <!-- Inner Shield Gradient -->
+    <linearGradient id="innerShieldGrad" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#0F3E35" />
+      <stop offset="50%" stop-color="#082520" />
+      <stop offset="100%" stop-color="#031613" />
+    </linearGradient>
+
+    <!-- Subtle Radial Glow -->
+    <radialGradient id="centerGlow" cx="50%" cy="45%" r="45%">
+      <stop offset="0%" stop-color="#10B981" stop-opacity="0.35" />
+      <stop offset="60%" stop-color="#059669" stop-opacity="0.1" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Drop Shadows for 3D Depth in APK Launcher -->
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.65" />
+    </filter>
+
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#34D399" flood-opacity="0.4" />
+    </filter>
+
+    <filter id="goldGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#F59E0B" flood-opacity="0.5" />
+    </filter>
+
+    <!-- Adaptive Icon Squircle Clip (Android Standard) -->
+    <clipPath id="squircleClip">
+      <rect x="0" y="0" width="512" height="512" rx="115" ry="115" />
+    </clipPath>
+  </defs>
+
+  <!-- ================= BASE BACKGROUND ================= -->
+  <g clip-path="url(#squircleClip)">
+    <!-- Base Canvas -->
+    <rect width="512" height="512" fill="url(#bgGrad)" />
+
+    <!-- Ambient Center Light -->
+    <circle cx="256" cy="240" r="220" fill="url(#centerGlow)" />
+
+    <!-- Sacred Geometric Background Motif (Watermark Grid) -->
+    <g opacity="0.04" stroke="#FFFFFF" stroke-width="1.5" fill="none">
+      <circle cx="256" cy="256" r="210" />
+      <circle cx="256" cy="256" r="175" />
+      <circle cx="256" cy="256" r="140" />
+      <polygon points="256,46 405,107 466,256 405,405 256,466 107,405 46,256 107,107" />
+      <polygon points="256,81 380,132 431,256 380,380 256,431 132,380 81,256 132,132" />
+    </g>
+
+    <!-- ================= 24H SHIFT ROTATION ORBIT ================= -->
+    <!-- Orbit Track (Golden Segmented Circle) -->
+    <circle cx="256" cy="246" r="182" fill="none" stroke="#F59E0B" stroke-width="2" stroke-dasharray="6 8" opacity="0.45" />
+
+    <!-- Shift Segment 1: PAGI (Morning Dawn Indicator at top-left ~10 o'clock) -->
+    <g transform="translate(125, 115)" filter="url(#goldGlow)">
+      <circle cx="0" cy="0" r="15" fill="#0B2E27" stroke="url(#goldGrad)" stroke-width="2.5" />
+      <!-- Miniature Sun / Fajar -->
+      <circle cx="0" cy="0" r="5.5" fill="url(#goldGrad)" />
+      <path d="M 0 -9 L 0 -11 M 0 9 L 0 11 M -9 0 L -11 0 M 9 0 L 11 0 M -6.5 -6.5 L -8 -8 M 6.5 6.5 L 8 8 M -6.5 6.5 L -8 8 M 6.5 -6.5 L 8 -8" stroke="url(#goldGrad)" stroke-width="1.8" stroke-linecap="round" />
+    </g>
+
+    <!-- Shift Segment 2: SORE (Afternoon Indicator at top-right ~2 o'clock) -->
+    <g transform="translate(387, 115)" filter="url(#goldGlow)">
+      <circle cx="0" cy="0" r="15" fill="#0B2E27" stroke="url(#goldGrad)" stroke-width="2.5" />
+      <!-- Golden Sun Rays setting -->
+      <path d="M -7 2 A 7 7 0 0 1 7 2 Z" fill="url(#goldGrad)" />
+      <line x1="-9" y1="5" x2="9" y2="5" stroke="url(#goldGrad)" stroke-width="1.8" stroke-linecap="round" />
+    </g>
+
+    <!-- Shift Segment 3: MALAM (Night Moon & Star at bottom center ~6 o'clock) -->
+    <g transform="translate(256, 432)" filter="url(#softGlow)">
+      <circle cx="0" cy="0" r="15" fill="#07191E" stroke="url(#cyanGrad)" stroke-width="2.5" />
+      <!-- Crescent Moon -->
+      <path d="M 2 -7 A 6.5 6.5 0 0 0 4 7 A 7 7 0 1 1 2 -7 Z" fill="url(#cyanGrad)" />
+      <circle cx="-3" cy="-2" r="1.2" fill="#FFFFFF" />
+    </g>
+
+    <!-- Dynamic 24H Orbital Sweeping Trail -->
+    <path d="M 125 115 A 182 182 0 0 1 387 115" fill="none" stroke="url(#goldGrad)" stroke-width="4.5" stroke-linecap="round" filter="url(#goldGlow)" />
+    <path d="M 387 115 A 182 182 0 0 1 256 428" fill="none" stroke="url(#emeraldGrad)" stroke-width="4.5" stroke-linecap="round" opacity="0.85" />
+    <path d="M 256 428 A 182 182 0 0 1 125 115" fill="none" stroke="url(#cyanGrad)" stroke-width="3" stroke-dasharray="5 7" opacity="0.7" />
+
+    <!-- ================= MAIN EMBLEM: PERISAI KUBAH WALI ASUH ================= -->
+    <g filter="url(#shadow)">
+      <!-- Outer Golden Shield Rim -->
+      <path d="M 256 68 
+               C 334 68, 386 94, 396 172 
+               C 400 248, 362 334, 256 386 
+               C 150 334, 112 248, 116 172 
+               C 126 94, 178 68, 256 68 Z"
+            fill="url(#goldGrad)" />
+
+      <!-- Outer Shield Inset Bevel (Dark Emerald) -->
+      <path d="M 256 76 
+               C 328 76, 376 100, 386 174 
+               C 390 244, 354 324, 256 374 
+               C 158 324, 122 244, 126 174 
+               C 136 100, 184 76, 256 76 Z"
+            fill="#062620" />
+
+      <!-- Inner Fine Gold Trim -->
+      <path d="M 256 84 
+               C 322 84, 366 106, 376 175 
+               C 380 238, 348 314, 256 362 
+               C 164 314, 132 238, 136 175 
+               C 146 106, 190 84, 256 84 Z"
+            fill="none" stroke="url(#goldGrad)" stroke-width="2.5" opacity="0.75" />
+
+      <!-- Inner Shield Canvas (Deep Core) -->
+      <path d="M 256 88 
+               C 319 88, 361 109, 371 176 
+               C 375 235, 344 310, 256 356 
+               C 168 310, 137 235, 141 176 
+               C 151 109, 193 88, 256 88 Z"
+            fill="url(#innerShieldGrad)" />
+    </g>
+
+    <!-- Dome Pinnacle Star (Kubah Keberkahan) -->
+    <g transform="translate(256, 102)" filter="url(#goldGlow)">
+      <polygon points="0,-12 3.5,-4 12,0 3.5,4 0,12 -3.5,4 -12,0 -3.5,-4" fill="url(#goldGrad)" />
+      <circle cx="0" cy="0" r="2.5" fill="#FFFFFF" />
+    </g>
+
+    <!-- ================= EMBLEM ICON: WALI ASUH & SANTRI ================= -->
+    <g id="guardianFigure" transform="translate(0, 10)">
+      <!-- Radiating Halo behind Guardian Head -->
+      <circle cx="256" cy="168" r="42" fill="url(#emeraldGrad)" opacity="0.22" filter="url(#softGlow)" />
+
+      <!-- Head of Guardian (Wali Asuh - Wisdom & Care) -->
+      <circle cx="256" cy="165" r="23" fill="url(#goldGrad)" filter="url(#goldGlow)" />
+      <circle cx="256" cy="165" r="19" fill="#082A23" />
+      <circle cx="256" cy="165" r="14" fill="url(#goldGrad)" />
+
+      <!-- Caring Guardian Wings / Embracing Hands (Ri'ayah & Hifzh) -->
+      <!-- Left Embracing Wing/Hand -->
+      <path d="M 238 200 
+               C 195 204, 168 238, 174 278 
+               C 178 304, 202 322, 234 328 
+               C 214 316, 204 294, 205 272 
+               C 206 242, 222 220, 248 208 Z" 
+            fill="url(#emeraldGrad)" filter="url(#softGlow)" />
+
+      <!-- Left Palm Detail (Accent Feather/Hand) -->
+      <path d="M 235 220 
+               C 210 234, 198 258, 204 286 
+               C 214 270, 228 252, 246 238 Z" 
+            fill="url(#goldGrad)" opacity="0.9" />
+
+      <!-- Right Embracing Wing/Hand -->
+      <path d="M 274 200 
+               C 317 204, 344 238, 338 278 
+               C 334 304, 310 322, 278 328 
+               C 298 316, 308 294, 307 272 
+               C 306 242, 290 220, 264 208 Z" 
+            fill="url(#emeraldGrad)" filter="url(#softGlow)" />
+
+      <!-- Right Palm Detail (Accent Feather/Hand) -->
+      <path d="M 277 220 
+               C 302 234, 314 258, 308 286 
+               C 298 270, 284 252, 266 238 Z" 
+            fill="url(#goldGrad)" opacity="0.9" />
+
+      <!-- Santri / Generasi Penerus Silhouette (In the Safe Center) -->
+      <circle cx="256" cy="226" r="12" fill="url(#goldGrad)" />
+      
+      <!-- Open Book / Rehal (Al-Qur'an & Pendidikan Karakter) -->
+      <path d="M 256 268 
+               L 230 252 
+               C 238 246, 248 244, 256 248 
+               C 264 244, 274 246, 282 252 Z" 
+            fill="url(#cyanGrad)" />
+      
+      <path d="M 256 270 L 225 288 L 235 292 L 256 276 L 277 292 L 287 288 Z" 
+            fill="url(#goldGrad)" opacity="0.95" />
+
+      <!-- Guiding Heart / Light Centerpoint -->
+      <polygon points="256,238 261,248 256,254 251,248" fill="#FFFFFF" />
+    </g>
+
+    <!-- ================= LOWER RIBBON / BADGE: WALI ASUH 24H ================= -->
+    <g transform="translate(256, 404)" filter="url(#shadow)">
+      <!-- Banner Background Plate -->
+      <path d="M -115 -18 L 115 -18 L 132 4 L 115 26 L -115 26 L -132 4 Z" 
+            fill="#062922" stroke="url(#goldGrad)" stroke-width="2.5" />
+
+      <!-- Inner Ribbon Highlights -->
+      <rect x="-106" y="-12" width="212" height="32" rx="4" fill="#0A3C32" />
+
+      <!-- Side Accent Rivets -->
+      <circle cx="-118" cy="4" r="3" fill="url(#goldGrad)" />
+      <circle cx="118" cy="4" r="3" fill="url(#goldGrad)" />
+
+      <!-- Ribbon Typography: WALI ASUH -->
+      <text x="0" y="2" 
+            text-anchor="middle" 
+            font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" 
+            font-size="15" 
+            font-weight="900" 
+            letter-spacing="4.5" 
+            fill="url(#goldGrad)">
+        WALI ASUH
+      </text>
+
+      <!-- Subtitle: 24 JAM PIKET -->
+      <text x="0" y="16" 
+            text-anchor="middle" 
+            font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" 
+            font-size="8.5" 
+            font-weight="800" 
+            letter-spacing="2.5" 
+            fill="#A7F3D0">
+        24H SHIFT SYSTEM
+      </text>
+    </g>
+
+    <!-- High-Gloss Specular Highlight (Corner Shine) -->
+    <path d="M 0 0 L 260 0 C 140 80, 60 160, 0 300 Z" fill="#FFFFFF" opacity="0.035" pointer-events="none" />
+  </g>
+</svg>
