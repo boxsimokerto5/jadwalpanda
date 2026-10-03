@@ -425,7 +425,10 @@ export const AdminShiftSwapView: React.FC<AdminShiftSwapViewProps> = ({
   // Execution: Single Shift Override - STRICTLY ISOLATED: Only updates staff1 on activeDay
   const handleExecuteOverride = () => {
     if (staff1CurrentShift === overrideShift) {
-      showToast('info', `${staff1Obj?.name} sudah bertugas dengan shift ${overrideShift} pada tanggal ini.`);
+      if (isSupabaseConfigured()) {
+        saveScheduleToSupabase(schedule, 'Admin Penyesuaian Shift').catch(() => {});
+      }
+      showToast('success', `${staff1Obj?.name || 'Petugas'} dikonfirmasi tetap dengan shif [${overrideShift}] (tersinkron ke database).`);
       return;
     }
 

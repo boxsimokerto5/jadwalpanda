@@ -16,8 +16,8 @@ export function sanitizeSupabaseUrl(rawUrl: string): string {
   return clean;
 }
 
-const DEFAULT_FALLBACK_URL = 'https://udxibvqrvxwvnovjoesv.supabase.co';
-const DEFAULT_FALLBACK_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkeGlidnFydnh3dm5vdmpvZXN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0NDEzODUsImV4cCI6MjEwNDAxNzM4NX0.cWA07gVC4iFKPY1aF5E4ZWV2OQtLX8g6LuUvp8FnerI';
+const DEFAULT_FALLBACK_URL = 'https://iytlasbgerhgvyomqxul.supabase.co';
+const DEFAULT_FALLBACK_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml5dGxhc2JnZXJoZ3Z5b21xeHVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5ODgxMTgsImV4cCI6MjEwNjU2NDExOH0.A-3sbjcvRyYtwNKG2Wmqr836NMl82m8vJURFZQma758';
 
 /**
  * Get stored Supabase configuration from localStorage with environment fallback (Cloudflare / Vite)

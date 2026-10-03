@@ -270,45 +270,8 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
       return updated;
     });
 
-    if (staffObj) {
-      if (newShift === 'P5') {
-        soundManager.playChime();
-        setEditingCell(null);
-        setP5ModalTarget({ day, staff: staffObj });
-        return;
-      }
-
-      if (newShift === 'P1' || newShift === 'P2' || newShift === 'P3') {
-        soundManager.playChime();
-        setEditingCell(null);
-        setMorningPostModalTarget({ day, staff: staffObj, shiftCode: newShift });
-        return;
-      }
-
-      if (newShift === 'IZIN') {
-        soundManager.playChime();
-        setEditingCell(null);
-        setLeaveModalTarget({ day, staff: staffObj });
-        return;
-      }
-
-      const validation = validateShiftAssignment(staffObj, newShift, day, schedule.days);
-      if (validation.hasSpecialReminder && validation.specialReminder) {
-        soundManager.playBell();
-        notificationService.triggerNotification(validation.specialReminder.title, {
-          body: validation.specialReminder.message,
-          sound: 'bell',
-        });
-        setM3ReminderModal(validation);
-        setToastMessage(`⏰ PENGINGAT M3: ${staffObj.name} wajib keliling asrama jam 23:00 WIB & kirim foto grup!`);
-        setTimeout(() => setToastMessage(null), 5000);
-        setEditingCell(null);
-        return;
-      }
-    }
-
     soundManager.playChime();
-    setToastMessage(`✅ Shif ${staffObj?.name || 'Petugas'} (Tgl ${day}) berhasil diubah menjadi ${newShift} & tersimpan ke cloud!`);
+    setToastMessage(`✅ Shif ${staffObj?.name || 'Petugas'} (Tgl ${day}) berhasil diubah menjadi ${newShift} & tersimpan ke database!`);
     setTimeout(() => setToastMessage(null), 3500);
     setEditingCell(null);
   };

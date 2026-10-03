@@ -78,28 +78,28 @@ function resolveScheduleDays(
   rawDays: Record<number, Record<number, ShiftCode>>,
   _year: number,
   _month: number,
-  staffList: Staff[]
+  _staffList: Staff[]
 ): Record<number, Record<number, ShiftCode>> {
-  // Preserve all individual shift assignments exactly as saved.
-  // Never re-shuffle or re-distribute other staff's shifts when a change is made.
+  // KEBEBASAN PENUH ADMIN:
+  // - Shif P3 bebas di hari apa pun (tidak harus hari Senin).
+  // - Petugas laki-laki bebas ditugaskan M2, M1, atau shif apa pun.
+  // - Petugas perempuan bebas ditugaskan M1, M2, atau shif apa pun.
+  // - Semua shif yang sudah dipilih admin (P1, P2, P3, P4, P5, S2A, S3A, S4A, M1, M2, M3, LP, O, L, C, IZIN)
+  //   dipertahankan 100% persis tanpa logika atau konversi yang membatasi.
+  if (!rawDays) return {};
   let modified = false;
   const result: Record<number, Record<number, ShiftCode>> = {};
-  const staffMap = new Map<number, Staff>();
-  (staffList || []).forEach((s) => staffMap.set(s.id, s));
 
   for (const dayStr in rawDays) {
     const day = Number(dayStr);
     result[day] = { ...rawDays[day] };
-    const dateObj = new Date(_year, _month - 1, day);
-    const isMonday = dateObj.getDay() === 1;
 
     for (const staffIdStr in result[day]) {
       const staffId = Number(staffIdStr);
       const val = result[day][staffId];
-      // Only normalize old legacy shorthand codes ('P', 'S', 'M')
-      // Strictly NEVER touch explicit user shift assignments (P1, P2, P3, S2A, S3A, S4A, M1, M2, LP, O, C)
+      // Hanya petakan kode lama bersurat tunggal tanpa batasan hari atau gender
       if (val === 'P') {
-        result[day][staffId] = isMonday ? 'P3' : 'P1';
+        result[day][staffId] = 'P1';
         modified = true;
       } else if (val === 'S' || (val as unknown as string) === 'S2B') {
         result[day][staffId] = 'S2A';
@@ -108,12 +108,7 @@ function resolveScheduleDays(
         result[day][staffId] = 'S3A';
         modified = true;
       } else if (val === 'M') {
-        const staff = staffMap.get(staffId);
-        const isFemale =
-          staff?.gender === 'P' ||
-          staff?.group?.toLowerCase().includes('perempuan') ||
-          (staff?.code && staff.code.startsWith('P') && Number(staff.code.replace('P', '')) >= 1 && Number(staff.code.replace('P', '')) <= 20);
-        result[day][staffId] = isFemale ? 'M2' : 'M1';
+        result[day][staffId] = 'M1';
         modified = true;
       }
     }
@@ -867,12 +862,10 @@ export default function App() {
     }
   }, [selectedMonth.year, selectedMonth.month, schedule]);
 
-  // Ensure any legacy 'P', 'S', 'M', or Monday morning codes are mapped strictly 1-to-1 without re-shuffling any other staff
+  // Ensure any legacy single letters 'P', 'S', 'M' are mapped 1-to-1 without touching explicit codes
   useEffect(() => {
     let hasLegacy = false;
     for (const day in schedule.days) {
-      const dateObj = new Date(schedule.year, schedule.month - 1, Number(day));
-      const isMonday = dateObj.getDay() === 1;
       for (const staffId in schedule.days[day]) {
         const val = schedule.days[day][staffId];
         if (
