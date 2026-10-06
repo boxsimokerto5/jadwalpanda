@@ -23,7 +23,7 @@ import {
   Moon,
   CheckSquare
 } from 'lucide-react';
-import { MonthSchedule, Staff, ShiftCode, HandoverReport, SickStudent, Student, HandoverShiftMode } from '../types';
+import { MonthSchedule, Staff, ShiftCode, HandoverReport, SickStudent, Student, HandoverShiftMode, MorningPostAssignment } from '../types';
 import { SHIFT_DEFINITIONS } from '../data/initialSchedule';
 import { ALL_STUDENTS_DATA, TOTAL_STUDENTS_COUNT } from '../data/studentsData';
 import { StudentPickerModal } from './StudentPickerModal';
@@ -35,6 +35,10 @@ import {
   deleteHandoverReportFromSupabase,
   fetchHandoverReportsFromSupabase
 } from '../utils/supabaseBackend';
+import {
+  getLocalMorningPostAssignments,
+  subscribeToMorningPostAssignments
+} from '../utils/morningPostService';
 
 export const DEFAULT_ACTIVITIES_BY_SHIFT: Record<string, string[]> = {
   PAGI_KE_SORE: [
@@ -172,6 +176,18 @@ export const HandoverReportView: React.FC<HandoverReportViewProps> = ({
   const [showStudentPicker, setShowStudentPicker] = useState<boolean>(false);
   const [pickerTargetId, setPickerTargetId] = useState<string | null>(null);
   const [savedReports, setSavedReports] = useState<HandoverReport[]>(() => getLocalHandoverReports());
+  const [morningPostAssignments, setMorningPostAssignments] = useState<Record<string, MorningPostAssignment>>(() =>
+    getLocalMorningPostAssignments(schedule.year, schedule.month)
+  );
+
+  // Subscribe to Morning Post & Cross-Shift Medical Guard Assignments (Puskesmas / RS)
+  useEffect(() => {
+    setMorningPostAssignments(getLocalMorningPostAssignments(schedule.year, schedule.month));
+    const unsub = subscribeToMorningPostAssignments(schedule.year, schedule.month, (data) => {
+      setMorningPostAssignments(data);
+    });
+    return () => unsub();
+  }, [schedule.year, schedule.month]);
 
   // Subscribe to Supabase Cloud handover reports
   useEffect(() => {
@@ -490,6 +506,66 @@ export const HandoverReportView: React.FC<HandoverReportViewProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  // Petugas yang mendapat penyematan Jaga Puskesmas / Jaga Rumah Sakit / Label Kustom lintas shif (Pagi, Sore, Malam)
+  const externalMedicalGuardStaff = useMemo(() => {
+    const getShiftCategoryLabel = (code?: string): string => {
+      if (!code) return 'Piket';
+      if (['P', 'P1', 'P2', 'P3', 'P4', 'P5'].includes(code)) return `Shif Pagi - ${code}`;
+      if (['S', 'S2A', 'S3A', 'S4A'].includes(code)) return `Shif Sore - ${code}`;
+      if (['M', 'M1', 'M2', 'M3'].includes(code)) return `Shif Malam - ${code}`;
+      return code;
+    };
+
+    const result: Array<{
+      key: string;
+      staffId: number;
+      staffName: string;
+      shiftCode: string;
+      shiftLabel: string;
+      medicalGuardLabel: string;
+      day: number;
+    }> = [];
+
+    const seenStaffIds = new Set<number>();
+
+    // Check activeDay across all shifts (Pagi, Sore, Malam)
+    const daysToCheck =
+      targetOutgoingDay !== activeDay ? [targetOutgoingDay, activeDay] : [activeDay];
+
+    daysToCheck.forEach((dayNum) => {
+      const daySchedule = schedule?.days?.[dayNum] || {};
+      staffList.forEach((st) => {
+        const assign = morningPostAssignments[`${dayNum}_${st.id}`];
+        const label = assign?.medicalGuardLabel?.trim();
+        if (!label) return;
+
+        const code = daySchedule[st.id] || assign?.shiftCode || '';
+        // If checking yesterday (for MALAM_KE_PAGI), only include if they were on night shift yesterday
+        if (dayNum !== activeDay && !['M', 'M1', 'M2', 'M3'].includes(code)) {
+          return;
+        }
+
+        if (seenStaffIds.has(st.id)) return;
+        seenStaffIds.add(st.id);
+
+        result.push({
+          key: `${dayNum}_${st.id}`,
+          staffId: st.id,
+          staffName: st.name,
+          shiftCode: code,
+          shiftLabel:
+            dayNum !== activeDay
+              ? `${getShiftCategoryLabel(code)} Tgl ${dayNum}`
+              : getShiftCategoryLabel(code),
+          medicalGuardLabel: label,
+          day: dayNum,
+        });
+      });
+    });
+
+    return result;
+  }, [morningPostAssignments, schedule.days, staffList, activeDay, targetOutgoingDay]);
+
   // Generate WhatsApp text report
   const generateWhatsAppReportText = () => {
     const dayName = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'][
@@ -503,6 +579,15 @@ export const HandoverReportView: React.FC<HandoverReportViewProps> = ({
     const incomingStaffText = incomingStaffList.length > 0
       ? incomingStaffList.map((name, idx) => `  ${idx + 1}. *${name}*`).join('\n')
       : '  _(Belum ada petugas / Tidak ada yang hadir)_';
+
+    const externalGuardSection = externalMedicalGuardStaff.length > 0
+      ? `\n\n🚑 *PETUGAS JAGA DI LUAR SEKOLAH RAKYAT:*\n${externalMedicalGuardStaff
+          .map(
+            (item, idx) =>
+              `  ${idx + 1}. *${item.staffName}* — ${item.medicalGuardLabel} (${item.shiftLabel})`
+          )
+          .join('\n')}`
+      : '';
 
     const sickText = sickStudents.length > 0
       ? sickStudents.map((s, idx) => {
@@ -540,7 +625,7 @@ ${sickText}
 ${outgoingStaffText}
 
 👥 *PETUGAS YANG MENERIMA (${nextShiftLabel}):*
-${incomingStaffText}
+${incomingStaffText}${externalGuardSection}
 ━━━━━━━━━━━━━━━━━━━━
 📝 *CATATAN TINDAK LANJUT:*
 ${specialIncidents || 'lakukan perawatan siswa sakit dan kegiatan pendampingan'}
@@ -1111,6 +1196,48 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
                 )}
               </div>
             </div>
+
+            {/* Kategori Otomatis: Petugas Jaga di Luar Sekolah Rakyat (Puskesmas / RS / Kustom) */}
+            {externalMedicalGuardStaff.length > 0 && (
+              <div className="p-2.5 rounded-lg border border-rose-200 dark:border-rose-900/60 bg-rose-50/50 dark:bg-rose-950/30 space-y-2 animate-in fade-in">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <HeartPulse className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                    <span className="font-bold text-[11px] text-rose-900 dark:text-rose-200">
+                      🚑 Petugas Jaga di Luar Sekolah Rakyat (Otomatis Terlampir di WA):
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold text-rose-700 dark:text-rose-300 bg-rose-100 dark:bg-rose-900/60 px-1.5 py-0.2 rounded">
+                    {externalMedicalGuardStaff.length} Orang
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                  {externalMedicalGuardStaff.map((item, idx) => (
+                    <div
+                      key={item.key}
+                      className="flex items-center justify-between gap-2 text-[11px] bg-white dark:bg-slate-800 px-2.5 py-1.5 rounded-lg border border-rose-200/80 dark:border-rose-800/60 shadow-2xs"
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-slate-400 font-mono text-[10px] shrink-0">
+                          {idx + 1}.
+                        </span>
+                        <span className="font-bold text-slate-800 dark:text-slate-100 truncate">
+                          {item.staffName}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[9.5px] font-extrabold">
+                          🏥 {item.medicalGuardLabel}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[9px] font-bold">
+                          {item.shiftLabel}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Section 2: Student Population & Attendance */}
