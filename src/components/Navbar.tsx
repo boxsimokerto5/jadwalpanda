@@ -217,40 +217,6 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           )}
 
-          {/* Dedicated Reset to PDF Baseline Button when viewing September 2026 (Admin Only) */}
-          {userRole === 'admin' && selectedMonth.year === 2026 && selectedMonth.month === 9 && onRestoreSeptemberPdf && (
-            <button
-              type="button"
-              onClick={() => {
-                if (window.confirm('Kembalikan jadwal September 2026 ke jadwal resmi sesuai dokumen PDF (100% persis asli tanpa aturan mengikat)?')) {
-                  onRestoreSeptemberPdf();
-                }
-              }}
-              title="Kembalikan jadwal September 2026 100% persis dokumen PDF resmi dan lepaskan aturan mengikat (Khusus Admin)"
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-50 hover:bg-teal-100 active:scale-95 text-teal-800 border border-teal-300 dark:bg-teal-950/80 dark:hover:bg-teal-900 dark:text-teal-200 dark:border-teal-700 transition-all cursor-pointer shadow-2xs"
-            >
-              <RotateCcw className="w-2.5 h-2.5 text-teal-600 dark:text-teal-400" />
-              <span>Reset PDF Sept</span>
-            </button>
-          )}
-
-          {/* Dedicated Reset to PDF Baseline Button when viewing October 2026 (Admin Only) */}
-          {userRole === 'admin' && selectedMonth.year === 2026 && selectedMonth.month === 10 && onRestoreOctoberPdf && (
-            <button
-              type="button"
-              onClick={() => {
-                if (window.confirm('Kembalikan jadwal Oktober 2026 ke jadwal resmi sesuai dokumen PDF (100% persis asli tanpa aturan mengikat)?')) {
-                  onRestoreOctoberPdf();
-                }
-              }}
-              title="Kembalikan jadwal Oktober 2026 100% persis dokumen PDF resmi dan lepaskan aturan mengikat (Khusus Admin)"
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-50 hover:bg-teal-100 active:scale-95 text-teal-800 border border-teal-300 dark:bg-teal-950/80 dark:hover:bg-teal-900 dark:text-teal-200 dark:border-teal-700 transition-all cursor-pointer shadow-2xs"
-            >
-              <RotateCcw className="w-2.5 h-2.5 text-teal-600 dark:text-teal-400" />
-              <span>Reset PDF Okt</span>
-            </button>
-          )}
-
           <div className="flex items-center gap-1">
             <Clock className="w-3 h-3 text-amber-600 dark:text-amber-400" />
             <span className="font-mono text-slate-800 dark:text-amber-300 font-bold">{timeStr}</span>
