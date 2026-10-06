@@ -1316,6 +1316,7 @@ export default function App() {
                 selectedStaffId={selectedStaffId}
                 activeDay={activeDay}
                 setActiveDay={setActiveDay}
+                userRole={currentUserRole}
               />
             )}
 

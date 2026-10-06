@@ -319,6 +319,23 @@ export async function saveSwapLogsToSupabase(
 
 const HANDOVER_REPORTS_STORAGE_KEY = 'wali_asuh_handover_reports_v1';
 const HANDOVER_REPORTS_LEGACY_KEY = 'srt1_handover_reports';
+const HANDOVER_REPORTS_DELETED_KEY = 'wali_asuh_handover_deleted_ids_v1';
+
+function getDeletedHandoverIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(HANDOVER_REPORTS_DELETED_KEY);
+    const arr: string[] = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDeletedHandoverIds(ids: Set<string>): void {
+  try {
+    localStorage.setItem(HANDOVER_REPORTS_DELETED_KEY, JSON.stringify(Array.from(ids)));
+  } catch {}
+}
 
 function sanitizeIsoTimestamp(raw?: string): string {
   if (!raw) return new Date().toISOString();
@@ -353,6 +370,7 @@ function sanitizeDateStr(dateStr: string | undefined, year: number, month: numbe
 
 export function getLocalHandoverReports(): HandoverReport[] {
   try {
+    const deletedIds = getDeletedHandoverIds();
     const rawPrimary = localStorage.getItem(HANDOVER_REPORTS_STORAGE_KEY);
     const rawLegacy = localStorage.getItem(HANDOVER_REPORTS_LEGACY_KEY);
     const rawOld = localStorage.getItem('srma24_handover_reports');
@@ -363,7 +381,7 @@ export function getLocalHandoverReports(): HandoverReport[] {
 
     const mergedMap = new Map<string, HandoverReport>();
     [...list3, ...list2, ...list1].forEach((item) => {
-      if (item && item.id) {
+      if (item && item.id && !deletedIds.has(String(item.id))) {
         mergedMap.set(String(item.id), item);
       }
     });
@@ -382,9 +400,12 @@ export function getLocalHandoverReports(): HandoverReport[] {
 
 function saveLocalHandoverReports(reports: HandoverReport[]): void {
   try {
-    const str = JSON.stringify(reports);
+    const deletedIds = getDeletedHandoverIds();
+    const filtered = reports.filter((r) => r && r.id && !deletedIds.has(String(r.id)));
+    const str = JSON.stringify(filtered);
     localStorage.setItem(HANDOVER_REPORTS_STORAGE_KEY, str);
     localStorage.setItem(HANDOVER_REPORTS_LEGACY_KEY, str);
+    localStorage.removeItem('srma24_handover_reports');
   } catch {}
 }
 
@@ -421,39 +442,66 @@ function mapRowToHandoverReport(d: any): HandoverReport {
 }
 
 export async function fetchHandoverReportsFromSupabase(): Promise<HandoverReport[]> {
+  const deletedIds = getDeletedHandoverIds();
   const local = getLocalHandoverReports();
   const client = getSupabaseClient();
   if (!client) return local;
 
   try {
-    const { data, error } = await client
-      .from('handover_reports')
-      .select('*')
-      .order('submitted_at', { ascending: false });
-
-    if (!error && Array.isArray(data) && data.length > 0) {
-      const mapped = data.map(mapRowToHandoverReport);
-      // Merge with any unsynced local reports so no data is ever lost
-      const mergedMap = new Map<string, HandoverReport>();
-      local.forEach((r) => mergedMap.set(String(r.id), r));
-      mapped.forEach((r) => mergedMap.set(String(r.id), r));
-      const merged = Array.from(mergedMap.values()).sort((a, b) => Number(b.id) - Number(a.id));
-      saveLocalHandoverReports(merged);
-      return merged;
-    }
-
-    // Fallback to system_settings if handover_reports table had no rows
+    // 1. Check system_settings first for any cloud-tracked deletedIds and mirror reports
     const { data: sysData } = await client
       .from('system_settings')
       .select('value_json')
       .eq('key', 'handover_reports_v1')
       .maybeSingle();
 
+    if (sysData?.value_json?.deletedIds && Array.isArray(sysData.value_json.deletedIds)) {
+      sysData.value_json.deletedIds.forEach((id: any) => deletedIds.add(String(id)));
+      saveDeletedHandoverIds(deletedIds);
+    }
+
+    const { data, error } = await client
+      .from('handover_reports')
+      .select('*')
+      .order('submitted_at', { ascending: false });
+
+    if (!error && Array.isArray(data)) {
+      const mapped = data
+        .map(mapRowToHandoverReport)
+        .filter((r) => !deletedIds.has(String(r.id)));
+
+      // Clean up any zombie rows in handover_reports that were marked deleted
+      const zombieIds = data
+        .map((d: any) => String(d.id))
+        .filter((id: string) => deletedIds.has(id));
+      if (zombieIds.length > 0) {
+        client.from('handover_reports').delete().in('id', zombieIds).then(() => {});
+      }
+
+      if (mapped.length > 0 || data.length === 0) {
+        const mergedMap = new Map<string, HandoverReport>();
+        local.forEach((r) => {
+          if (!deletedIds.has(String(r.id))) mergedMap.set(String(r.id), r);
+        });
+        mapped.forEach((r) => {
+          if (!deletedIds.has(String(r.id))) mergedMap.set(String(r.id), r);
+        });
+        const merged = Array.from(mergedMap.values()).sort((a, b) => Number(b.id) - Number(a.id));
+        saveLocalHandoverReports(merged);
+        return merged;
+      }
+    }
+
+    // Fallback to system_settings if handover_reports query failed
     if (sysData?.value_json?.reports && Array.isArray(sysData.value_json.reports)) {
       const cloudReports: HandoverReport[] = sysData.value_json.reports;
       const mergedMap = new Map<string, HandoverReport>();
-      local.forEach((r) => mergedMap.set(String(r.id), r));
-      cloudReports.forEach((r) => mergedMap.set(String(r.id), r));
+      local.forEach((r) => {
+        if (!deletedIds.has(String(r.id))) mergedMap.set(String(r.id), r);
+      });
+      cloudReports.forEach((r) => {
+        if (r && r.id && !deletedIds.has(String(r.id))) mergedMap.set(String(r.id), r);
+      });
       const merged = Array.from(mergedMap.values()).sort((a, b) => Number(b.id) - Number(a.id));
       saveLocalHandoverReports(merged);
       return merged;
@@ -461,7 +509,7 @@ export async function fetchHandoverReportsFromSupabase(): Promise<HandoverReport
   } catch (err) {
     console.warn('[Supabase] Fetch handover reports notice:', err);
   }
-  return local;
+  return local.filter((r) => !deletedIds.has(String(r.id)));
 }
 
 export function subscribeToHandoverReports(
@@ -540,9 +588,10 @@ export async function saveHandoverReportsToSupabase(
 
   // 1. Always save JSONB mirror in system_settings for 100% guaranteed persistence
   try {
+    const deletedIds = Array.from(getDeletedHandoverIds());
     const { error: sysErr } = await client.from('system_settings').upsert({
       key: 'handover_reports_v1',
-      value_json: { reports, updatedAt: new Date().toISOString() },
+      value_json: { reports, deletedIds, updatedAt: new Date().toISOString() },
       updated_at: new Date().toISOString(),
     });
     if (!sysErr) savedToCloud = true;
@@ -600,9 +649,14 @@ export async function deleteHandoverReportFromSupabase(
   reportId: string,
   remainingReports: HandoverReport[]
 ): Promise<boolean> {
-  saveLocalHandoverReports(remainingReports);
+  const deletedIds = getDeletedHandoverIds();
+  deletedIds.add(String(reportId));
+  saveDeletedHandoverIds(deletedIds);
+
+  const cleanRemaining = remainingReports.filter((r) => String(r.id) !== String(reportId));
+  saveLocalHandoverReports(cleanRemaining);
   try {
-    window.dispatchEvent(new CustomEvent('handover_reports_updated', { detail: { reports: remainingReports } }));
+    window.dispatchEvent(new CustomEvent('handover_reports_updated', { detail: { reports: cleanRemaining } }));
   } catch {}
 
   const client = getSupabaseClient();
@@ -615,7 +669,11 @@ export async function deleteHandoverReportFromSupabase(
   try {
     await client.from('system_settings').upsert({
       key: 'handover_reports_v1',
-      value_json: { reports: remainingReports, updatedAt: new Date().toISOString() },
+      value_json: {
+        reports: cleanRemaining,
+        deletedIds: Array.from(deletedIds),
+        updatedAt: new Date().toISOString(),
+      },
       updated_at: new Date().toISOString(),
     });
   } catch {}

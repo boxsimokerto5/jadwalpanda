@@ -97,6 +97,7 @@ interface HandoverReportViewProps {
   selectedStaffId: number;
   activeDay: number;
   setActiveDay: (day: number) => void;
+  userRole?: 'admin' | 'staff';
 }
 
 export const HandoverReportView: React.FC<HandoverReportViewProps> = ({
@@ -105,6 +106,7 @@ export const HandoverReportView: React.FC<HandoverReportViewProps> = ({
   selectedStaffId,
   activeDay,
   setActiveDay,
+  userRole = 'staff',
 }) => {
   // Current active staff
   const currentStaff = staffList.find((s) => s.id === selectedStaffId) || staffList[0] || {
@@ -716,11 +718,12 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
   };
 
   const handleDeleteReport = async (reportId: string) => {
+    if (userRole !== 'admin') return;
     const remaining = savedReports.filter((r) => String(r.id) !== String(reportId));
     setSavedReports(remaining);
     await deleteHandoverReportFromSupabase(reportId, remaining);
     soundManager.playGong();
-    showToast('Laporan serah terima dihapus dari riwayat & database.');
+    showToast('Laporan serah terima berhasil dihapus permanen dari riwayat & database Cloud.');
   };
 
   const handleSyncHistory = async () => {
@@ -1902,13 +1905,15 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
                         >
                           Muat ke Editor
                         </button>
-                        <button
-                          onClick={() => handleDeleteReport(rep.id)}
-                          className="p-1 rounded bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 hover:bg-rose-100"
-                          title="Hapus laporan ini"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {userRole === 'admin' && (
+                          <button
+                            onClick={() => handleDeleteReport(rep.id)}
+                            className="p-1 rounded bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 hover:bg-rose-100 cursor-pointer"
+                            title="Hapus permanen laporan ini dari Cloud (Khusus Admin)"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
