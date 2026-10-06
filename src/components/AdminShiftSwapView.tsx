@@ -31,12 +31,13 @@ import {
 import { P5TaskAdminManager } from './P5TaskAdminManager';
 import { MorningPostAdminManager } from './MorningPostAdminManager';
 import { ImportScheduleModal } from './ImportScheduleModal';
-import { MonthSchedule, Staff, ShiftCode, ShiftSwapRecord, AnnouncementData, MorningPostAssignment, MorningPostCustomOption } from '../types';
+import { MonthSchedule, Staff, ShiftCode, ShiftSwapRecord, AnnouncementData, MorningPostAssignment, MorningPostCustomOption, MedicalGuardCustomOption } from '../types';
 import { SHIFT_DEFINITIONS } from '../data/initialSchedule';
 import { INDONESIAN_DAY_NAMES, INDONESIAN_MONTH_NAMES, validateShiftAssignment } from '../utils/scheduler';
 import { soundManager } from '../utils/audio';
 import { notificationService } from '../utils/notification';
 import { 
+  getLocalSwapLogs,
   subscribeToSwapLogs, 
   saveSwapLogsToSupabase,
   subscribeToAnnouncement,
@@ -50,7 +51,10 @@ import {
   saveMorningPostAssignmentToSupabase,
   deleteMorningPostAssignment,
   getLocalMorningPostOptions,
-  subscribeToMorningPostOptions
+  subscribeToMorningPostOptions,
+  getLocalMedicalGuardOptions,
+  subscribeToMedicalGuardOptions,
+  updateStaffMedicalGuardLabel
 } from '../utils/morningPostService';
 import { MorningPostAssignmentModal } from './MorningPostAssignmentModal';
 import { isSupabaseConfigured, saveScheduleToSupabase } from '../utils/supabaseService';
@@ -121,7 +125,10 @@ export const AdminShiftSwapView: React.FC<AdminShiftSwapViewProps> = ({
   const [morningPostOptions, setMorningPostOptions] = useState<MorningPostCustomOption[]>(() =>
     getLocalMorningPostOptions()
   );
-  const [morningPostModalTarget, setMorningPostModalTarget] = useState<{ day: number; staff: Staff; shiftCode: 'P1' | 'P2' | 'P3' } | null>(null);
+  const [medicalGuardOptions, setMedicalGuardOptions] = useState<MedicalGuardCustomOption[]>(() =>
+    getLocalMedicalGuardOptions()
+  );
+  const [morningPostModalTarget, setMorningPostModalTarget] = useState<{ day: number; staff: Staff; shiftCode: ShiftCode | string } | null>(null);
 
   useEffect(() => {
     const unsubAssign = subscribeToMorningPostAssignments(schedule.year, schedule.month, (data) => {
@@ -136,10 +143,15 @@ export const AdminShiftSwapView: React.FC<AdminShiftSwapViewProps> = ({
       setMorningPostOptions(opts);
     });
 
+    const unsubMedOpts = subscribeToMedicalGuardOptions((medOpts) => {
+      setMedicalGuardOptions(medOpts);
+    });
+
     return () => {
       unsubAssign();
       window.removeEventListener('morning_post_assignments_updated', handleUpdate);
       unsubOpts();
+      unsubMedOpts();
     };
   }, [schedule.year, schedule.month]);
 
@@ -194,20 +206,17 @@ export const AdminShiftSwapView: React.FC<AdminShiftSwapViewProps> = ({
 
   // History logs stored in Supabase with localStorage fallback
   const [swapLogs, setSwapLogs] = useState<ShiftSwapRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem(`wali_asuh_swap_logs_${schedule.year}_${schedule.month}`);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
+    return getLocalSwapLogs(schedule.year, schedule.month);
   });
 
   // Subscribe to Supabase swap logs
   useEffect(() => {
+    setSwapLogs(getLocalSwapLogs(schedule.year, schedule.month));
     const unsubscribe = subscribeToSwapLogs(schedule.year, schedule.month, (cloudLogs) => {
       if (cloudLogs && Array.isArray(cloudLogs)) {
         setSwapLogs(cloudLogs);
         try {
+          localStorage.setItem(`wali_asuh_swap_logs_v1_${schedule.year}_${schedule.month}`, JSON.stringify(cloudLogs));
           localStorage.setItem(`wali_asuh_swap_logs_${schedule.year}_${schedule.month}`, JSON.stringify(cloudLogs));
         } catch {}
       }
@@ -219,6 +228,7 @@ export const AdminShiftSwapView: React.FC<AdminShiftSwapViewProps> = ({
   const persistSwapLogs = (updatedLogs: ShiftSwapRecord[]) => {
     setSwapLogs(updatedLogs);
     try {
+      localStorage.setItem(`wali_asuh_swap_logs_v1_${schedule.year}_${schedule.month}`, JSON.stringify(updatedLogs));
       localStorage.setItem(`wali_asuh_swap_logs_${schedule.year}_${schedule.month}`, JSON.stringify(updatedLogs));
       saveSwapLogsToSupabase(schedule.year, schedule.month, updatedLogs);
     } catch (e) {
@@ -1600,7 +1610,7 @@ export const AdminShiftSwapView: React.FC<AdminShiftSwapViewProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
                       {renderShiftBadge(shift, 'sm')}
                       {(shift === 'P1' || shift === 'P2' || shift === 'P3' || shift === 'P') && (
                         <button
@@ -1615,9 +1625,29 @@ export const AdminShiftSwapView: React.FC<AdminShiftSwapViewProps> = ({
                               ? 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300 border border-sky-300 dark:border-sky-800'
                               : 'bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300 dark:border-amber-800 border-dashed hover:bg-amber-100'
                           }`}
-                          title="Klik untuk atur pos penugasan"
+                          title="Klik untuk atur pos penugasan UKS / Mobile"
                         >
                           {morningPostAssignments[`${activeDay}_${st.id}`]?.postTitle || '+ Pos'}
+                        </button>
+                      )}
+                      {['P', 'P1', 'P2', 'P3', 'P4', 'P5', 'S', 'S2A', 'S3A', 'S4A', 'M', 'M1', 'M2', 'M3'].includes(shift) && (
+                        <button
+                          type="button"
+                          onClick={() => setMorningPostModalTarget({
+                            day: activeDay,
+                            staff: st,
+                            shiftCode: shift,
+                          })}
+                          className={`text-[9px] px-1.5 py-0.5 rounded font-bold cursor-pointer transition-colors ${
+                            morningPostAssignments[`${activeDay}_${st.id}`]?.medicalGuardLabel
+                              ? 'bg-rose-600 text-white border border-rose-700 shadow-2xs'
+                              : 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 border border-rose-300 dark:border-rose-800 border-dashed hover:bg-rose-100'
+                          }`}
+                          title="Klik untuk sematkan Jaga Puskesmas / Jaga Rumah Sakit / Label Kustom (Pagi, Sore & Malam)"
+                        >
+                          {morningPostAssignments[`${activeDay}_${st.id}`]?.medicalGuardLabel
+                            ? `🏥 ${morningPostAssignments[`${activeDay}_${st.id}`]?.medicalGuardLabel}`
+                            : '+ Puskesmas/RS'}
                         </button>
                       )}
 
@@ -1782,11 +1812,16 @@ export const AdminShiftSwapView: React.FC<AdminShiftSwapViewProps> = ({
           userRole="admin"
           onSaved={(assignment) => {
             setMorningPostAssignments(getLocalMorningPostAssignments(schedule.year, schedule.month));
+            const labelSummary = [
+              assignment?.postTitle ? `Pos: ${assignment.postTitle}` : null,
+              assignment?.medicalGuardLabel ? `🏥 ${assignment.medicalGuardLabel}` : null,
+              assignment?.quranAssistance ? `📖 ${assignment.quranAssistance}` : null,
+            ].filter(Boolean).join(' • ');
             setToastMessage({
               type: 'success',
-              text: assignment 
-                ? `Pos untuk ${morningPostModalTarget.staff.name} berhasil disimpan: "${assignment.postTitle}"`
-                : `Pos untuk ${morningPostModalTarget.staff.name} direset.`
+              text: assignment && labelSummary
+                ? `Penyematan untuk ${morningPostModalTarget.staff.name} berhasil disimpan (${labelSummary})`
+                : `Penyematan untuk ${morningPostModalTarget.staff.name} direset.`
             });
             setTimeout(() => setToastMessage(null), 3500);
           }}

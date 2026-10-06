@@ -1,4 +1,4 @@
-import { MorningPostAssignment, MorningPostCustomOption, QuranAssistanceLevel, Staff, ShiftCode } from '../types';
+import { MorningPostAssignment, MorningPostCustomOption, MedicalGuardCustomOption, QuranAssistanceLevel, Staff, ShiftCode } from '../types';
 import { getSupabaseClient } from './supabaseService';
 
 export const DEFAULT_MORNING_POST_OPTIONS: MorningPostCustomOption[] = [
@@ -14,7 +14,13 @@ export const DEFAULT_QURAN_ASSISTANCE_OPTIONS: { id: string; label: QuranAssista
   { id: 'mengaji_sma', label: 'Mengaji SMA', desc: 'Pendampingan santri SMA' },
 ];
 
+export const DEFAULT_MEDICAL_GUARD_OPTIONS: MedicalGuardCustomOption[] = [
+  { id: 'jaga_puskesmas', label: 'Jaga Puskesmas', desc: 'Pendampingan santri di Puskesmas', isDefault: true },
+  { id: 'jaga_rs', label: 'Jaga Rumah Sakit', desc: 'Pendampingan santri di Rumah Sakit', isDefault: true },
+];
+
 const MORNING_POST_OPTIONS_STORAGE_KEY = 'wali_asuh_morning_post_options_v1';
+const MEDICAL_GUARD_OPTIONS_STORAGE_KEY = 'wali_asuh_medical_guard_options_v1';
 const MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX = 'wali_asuh_morning_post_assignments_v1';
 
 /**
@@ -212,7 +218,122 @@ export async function saveMorningPostAssignmentToSupabase(
 }
 
 /**
- * Update Quran assistance specifically without touching main postTitle
+ * Get current customizable Medical Guard options (Jaga Puskesmas, Jaga Rumah Sakit, etc.)
+ */
+export function getLocalMedicalGuardOptions(): MedicalGuardCustomOption[] {
+  try {
+    const saved = localStorage.getItem(MEDICAL_GUARD_OPTIONS_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {}
+  return DEFAULT_MEDICAL_GUARD_OPTIONS;
+}
+
+/**
+ * Save customizable Medical Guard options locally & to Supabase
+ */
+export async function saveMedicalGuardOptions(options: MedicalGuardCustomOption[]): Promise<boolean> {
+  try {
+    localStorage.setItem(MEDICAL_GUARD_OPTIONS_STORAGE_KEY, JSON.stringify(options));
+    window.dispatchEvent(new CustomEvent('medical_guard_options_updated', { detail: { options } }));
+  } catch {}
+
+  const client = getSupabaseClient();
+  if (!client) return true;
+
+  try {
+    await client.from('morning_post_options').upsert({
+      id: 'medical_guard_options',
+      options_json: options,
+      updated_at: new Date().toISOString(),
+    });
+    return true;
+  } catch (err: any) {
+    console.warn('[MedicalGuard] Supabase notice:', err);
+    return true;
+  }
+}
+
+/**
+ * Fetch customizable Medical Guard options from Supabase
+ */
+export async function fetchMedicalGuardOptionsFromSupabase(): Promise<MedicalGuardCustomOption[] | null> {
+  const client = getSupabaseClient();
+  if (!client) return getLocalMedicalGuardOptions();
+
+  try {
+    const { data } = await client
+      .from('morning_post_options')
+      .select('options_json')
+      .eq('id', 'medical_guard_options')
+      .maybeSingle();
+
+    if (data?.options_json && Array.isArray(data.options_json) && data.options_json.length > 0) {
+      localStorage.setItem(MEDICAL_GUARD_OPTIONS_STORAGE_KEY, JSON.stringify(data.options_json));
+      return data.options_json;
+    }
+    return getLocalMedicalGuardOptions();
+  } catch {
+    return getLocalMedicalGuardOptions();
+  }
+}
+
+/**
+ * Realtime subscribe to customizable Medical Guard options
+ */
+export function subscribeToMedicalGuardOptions(
+  onData: (options: MedicalGuardCustomOption[]) => void
+): () => void {
+  onData(getLocalMedicalGuardOptions());
+
+  const handleLocal = () => {
+    onData(getLocalMedicalGuardOptions());
+  };
+  window.addEventListener('medical_guard_options_updated', handleLocal);
+
+  const client = getSupabaseClient();
+  if (!client) {
+    return () => {
+      window.removeEventListener('medical_guard_options_updated', handleLocal);
+    };
+  }
+
+  fetchMedicalGuardOptionsFromSupabase().then((res) => {
+    if (res) onData(res);
+  });
+
+  try {
+    const channel = client
+      .channel('medical_guard_options_channel')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'morning_post_options', filter: 'id=eq.medical_guard_options' },
+        (payload: any) => {
+          if (payload.new?.options_json && Array.isArray(payload.new.options_json)) {
+            localStorage.setItem(MEDICAL_GUARD_OPTIONS_STORAGE_KEY, JSON.stringify(payload.new.options_json));
+            onData(payload.new.options_json);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      window.removeEventListener('medical_guard_options_updated', handleLocal);
+      client.removeChannel(channel);
+    };
+  } catch {
+    return () => {
+      window.removeEventListener('medical_guard_options_updated', handleLocal);
+    };
+  }
+}
+
+/**
+ * Update Quran assistance specifically without touching main postTitle or medicalGuardLabel
  */
 export async function updateStaffQuranAssistance(
   year: number,
@@ -227,7 +348,7 @@ export async function updateStaffQuranAssistance(
   const key = `${day}_${staffId}`;
   const existing = current[key];
 
-  if (!quranAssistance && !existing?.postTitle) {
+  if (!quranAssistance && !existing?.postTitle && !existing?.medicalGuardLabel) {
     return deleteMorningPostAssignment(year, month, day, staffId);
   }
 
@@ -241,6 +362,7 @@ export async function updateStaffQuranAssistance(
     shiftCode: existing?.shiftCode || shiftCode,
     postTitle: existing?.postTitle,
     quranAssistance: quranAssistance,
+    medicalGuardLabel: existing?.medicalGuardLabel,
     updatedAt: new Date().toISOString(),
     updatedBy: 'Admin',
   };
@@ -273,7 +395,72 @@ export async function updateStaffQuranAssistance(
 }
 
 /**
- * Clear main postTitle specifically without removing quranAssistance
+ * Update Medical Guard Label (Jaga Puskesmas / Jaga Rumah Sakit / Custom) across ANY shift (Pagi, Sore, Malam)
+ * without touching postTitle or quranAssistance
+ */
+export async function updateStaffMedicalGuardLabel(
+  year: number,
+  month: number,
+  day: number,
+  staffId: number,
+  staffName: string,
+  shiftCode: ShiftCode | string,
+  medicalGuardLabel: string | undefined
+): Promise<boolean> {
+  const current = getLocalMorningPostAssignments(year, month);
+  const key = `${day}_${staffId}`;
+  const existing = current[key];
+
+  const trimmed = medicalGuardLabel?.trim() || undefined;
+
+  if (!trimmed && !existing?.postTitle && !existing?.quranAssistance) {
+    return deleteMorningPostAssignment(year, month, day, staffId);
+  }
+
+  const assignment: MorningPostAssignment = {
+    ...existing,
+    staffId,
+    staffName,
+    day,
+    month,
+    year,
+    shiftCode: shiftCode || existing?.shiftCode || 'P1',
+    postTitle: existing?.postTitle,
+    quranAssistance: existing?.quranAssistance,
+    medicalGuardLabel: trimmed,
+    updatedAt: new Date().toISOString(),
+    updatedBy: 'Admin',
+  };
+
+  if (!trimmed) {
+    delete assignment.medicalGuardLabel;
+  }
+
+  current[key] = assignment;
+  try {
+    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(current));
+  } catch {}
+
+  window.dispatchEvent(new CustomEvent('morning_post_assignments_updated', { detail: { year, month, assignment } }));
+
+  const client = getSupabaseClient();
+  if (!client) return true;
+
+  try {
+    const schedId = `${year}_${month}`;
+    await client.from('morning_posts').upsert({
+      schedule_id: schedId,
+      assignments_json: current,
+      updated_at: new Date().toISOString(),
+    });
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Clear main postTitle specifically without removing quranAssistance or medicalGuardLabel
  */
 export async function clearStaffMainPost(
   year: number,
@@ -287,7 +474,7 @@ export async function clearStaffMainPost(
 
   if (!existing) return true;
 
-  if (!existing.quranAssistance) {
+  if (!existing.quranAssistance && !existing.medicalGuardLabel) {
     return deleteMorningPostAssignment(year, month, day, staffId);
   }
 

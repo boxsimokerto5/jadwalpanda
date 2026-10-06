@@ -6,19 +6,22 @@ import {
   Edit2, 
   Check, 
   X, 
-  Save, 
   RotateCcw, 
   AlertCircle, 
   CheckCircle2, 
-  ShieldCheck,
-  MapPin
+  MapPin,
+  Stethoscope
 } from 'lucide-react';
-import { MorningPostCustomOption } from '../types';
+import { MorningPostCustomOption, MedicalGuardCustomOption } from '../types';
 import { 
   getLocalMorningPostOptions, 
   saveMorningPostOptions, 
   subscribeToMorningPostOptions, 
-  DEFAULT_MORNING_POST_OPTIONS 
+  DEFAULT_MORNING_POST_OPTIONS,
+  getLocalMedicalGuardOptions,
+  saveMedicalGuardOptions,
+  subscribeToMedicalGuardOptions,
+  DEFAULT_MEDICAL_GUARD_OPTIONS
 } from '../utils/morningPostService';
 import { soundManager } from '../utils/audio';
 
@@ -31,6 +34,13 @@ export const MorningPostAdminManager: React.FC<MorningPostAdminManagerProps> = (
   const [newLabel, setNewLabel] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState('');
+
+  // State for Medical Guard Custom Options (Jaga Puskesmas, Jaga Rumah Sakit, Custom)
+  const [medOptions, setMedOptions] = useState<MedicalGuardCustomOption[]>(() => getLocalMedicalGuardOptions());
+  const [newMedLabel, setNewMedLabel] = useState('');
+  const [editingMedId, setEditingMedId] = useState<string | null>(null);
+  const [editingMedLabel, setEditingMedLabel] = useState('');
+
   const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
@@ -38,7 +48,13 @@ export const MorningPostAdminManager: React.FC<MorningPostAdminManagerProps> = (
     const unsubscribe = subscribeToMorningPostOptions((updated) => {
       setOptions(updated);
     });
-    return () => unsubscribe();
+    const unsubscribeMed = subscribeToMedicalGuardOptions((updatedMed) => {
+      setMedOptions(updatedMed);
+    });
+    return () => {
+      unsubscribe();
+      unsubscribeMed();
+    };
   }, []);
 
   const showToast = (type: 'success' | 'error' | 'info', text: string) => {
@@ -147,6 +163,94 @@ export const MorningPostAdminManager: React.FC<MorningPostAdminManagerProps> = (
       if (onUpdated) onUpdated();
     } else {
       showToast('error', 'Gagal mereset data.');
+    }
+  };
+
+  // ==================== HANDLERS FOR JAGA PUSKESMAS & RUMAH SAKIT (CUSTOM) ====================
+  const handleAddMedOption = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newMedLabel.trim();
+    if (!trimmed) {
+      showToast('error', 'Nama label penyematan tidak boleh kosong.');
+      return;
+    }
+
+    if (medOptions.some((opt) => opt.label.toLowerCase() === trimmed.toLowerCase())) {
+      showToast('error', 'Label penyematan ini sudah ada dalam daftar.');
+      return;
+    }
+
+    const newOpt: MedicalGuardCustomOption = {
+      id: `med_${Date.now()}`,
+      label: trimmed,
+      desc: 'Label tugas kustom (Pagi/Sore/Malam)',
+      isDefault: false,
+    };
+
+    const nextOptions = [...medOptions, newOpt];
+    setIsSaving(true);
+    const success = await saveMedicalGuardOptions(nextOptions);
+    setIsSaving(false);
+
+    if (success) {
+      setMedOptions(nextOptions);
+      setNewMedLabel('');
+      soundManager.playChime();
+      showToast('success', `Label "${trimmed}" berhasil ditambahkan untuk Shif Pagi, Sore & Malam.`);
+      if (onUpdated) onUpdated();
+    }
+  };
+
+  const handleSaveEditMed = async () => {
+    if (!editingMedId) return;
+    const trimmed = editingMedLabel.trim();
+    if (!trimmed) {
+      showToast('error', 'Nama label tidak boleh kosong.');
+      return;
+    }
+
+    const nextOptions = medOptions.map((opt) =>
+      opt.id === editingMedId ? { ...opt, label: trimmed } : opt
+    );
+
+    setIsSaving(true);
+    const success = await saveMedicalGuardOptions(nextOptions);
+    setIsSaving(false);
+
+    if (success) {
+      setMedOptions(nextOptions);
+      setEditingMedId(null);
+      setEditingMedLabel('');
+      soundManager.playChime();
+      showToast('success', 'Label penyematan berhasil diperbarui.');
+      if (onUpdated) onUpdated();
+    }
+  };
+
+  const handleDeleteMed = async (id: string, label: string) => {
+    const nextOptions = medOptions.filter((opt) => opt.id !== id);
+    setIsSaving(true);
+    const success = await saveMedicalGuardOptions(nextOptions);
+    setIsSaving(false);
+
+    if (success) {
+      setMedOptions(nextOptions);
+      soundManager.playClick();
+      showToast('info', `Label "${label}" telah dihapus.`);
+      if (onUpdated) onUpdated();
+    }
+  };
+
+  const handleResetMedDefaults = async () => {
+    setIsSaving(true);
+    const success = await saveMedicalGuardOptions(DEFAULT_MEDICAL_GUARD_OPTIONS);
+    setIsSaving(false);
+
+    if (success) {
+      setMedOptions(DEFAULT_MEDICAL_GUARD_OPTIONS);
+      soundManager.playChime();
+      showToast('success', 'Label penyematan dikembalikan ke Jaga Puskesmas & Jaga Rumah Sakit.');
+      if (onUpdated) onUpdated();
     }
   };
 
@@ -303,6 +407,134 @@ export const MorningPostAdminManager: React.FC<MorningPostAdminManagerProps> = (
           <span>Tambah Pos Dropdown</span>
         </button>
       </form>
+
+      {/* ==================== MASTER LABEL JAGA PUSKESMAS & RUMAH SAKIT (PAGI, SORE & MALAM) ==================== */}
+      <div className="pt-3 mt-3 border-t-2 border-rose-200 dark:border-rose-900/60 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300 flex items-center justify-center font-bold">
+              <Stethoscope className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
+                  Master Label Jaga Puskesmas & Jaga Rumah Sakit (Bisa Custom)
+                </h3>
+                <span className="px-1.5 py-0.2 rounded bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 text-[9.5px] font-extrabold border border-rose-200 dark:border-rose-800">
+                  Shif Pagi • Sore • Malam
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Daftar label penyematan tugas pendampingan berobat/jaga yang dapat disematkan ke petugas di <strong>Shif Pagi, Shif Sore, maupun Shif Malam</strong>.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleResetMedDefaults}
+            disabled={isSaving}
+            className="text-[11px] px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-950/50 text-rose-700 dark:text-rose-300 flex items-center gap-1 cursor-pointer transition-colors"
+            title="Kembalikan ke Jaga Puskesmas & Jaga Rumah Sakit"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>Reset Standar Medis</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          {medOptions.map((opt) => {
+            const isEditing = editingMedId === opt.id;
+            return (
+              <div
+                key={opt.id}
+                className="flex items-center justify-between p-2 rounded-lg bg-rose-50/60 dark:bg-rose-950/25 border border-rose-200 dark:border-rose-900/50 text-xs text-slate-800 dark:text-slate-200"
+              >
+                {isEditing ? (
+                  <div className="flex items-center gap-1 w-full">
+                    <input
+                      type="text"
+                      value={editingMedLabel}
+                      onChange={(e) => setEditingMedLabel(e.target.value)}
+                      className="w-full text-xs px-2 py-0.5 rounded border border-rose-400 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveEditMed}
+                      disabled={isSaving}
+                      className="p-1 rounded bg-rose-600 text-white hover:bg-rose-500 cursor-pointer"
+                      title="Simpan"
+                    >
+                      <Check className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingMedId(null)}
+                      className="p-1 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 cursor-pointer"
+                      title="Batal"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-1.5 truncate">
+                      <span>🏥</span>
+                      <span className="font-semibold truncate">{opt.label}</span>
+                      {opt.isDefault && (
+                        <span className="text-[8px] px-1 py-0.2 rounded bg-rose-100 text-rose-700 dark:bg-rose-900 dark:text-rose-300 shrink-0">
+                          Bawaan
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingMedId(opt.id);
+                          setEditingMedLabel(opt.label);
+                          soundManager.playClick();
+                        }}
+                        className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
+                        title="Edit nama label"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteMed(opt.id, opt.label)}
+                        className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
+                        title="Hapus label"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <form onSubmit={handleAddMedOption} className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+          <input
+            type="text"
+            value={newMedLabel}
+            onChange={(e) => setNewMedLabel(e.target.value)}
+            placeholder="Tambah label kustom baru (misal: Jaga RSUD SLG / Jaga Puskesmas Semen / Antar Rujukan)..."
+            className="w-full sm:flex-1 text-xs px-3 py-2 rounded-lg border border-rose-300 dark:border-rose-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500"
+          />
+          <button
+            type="submit"
+            disabled={isSaving || !newMedLabel.trim()}
+            className="w-full sm:w-auto px-3.5 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 active:scale-95 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50 transition-all shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Tambah Label Puskesmas/RS</span>
+          </button>
+        </form>
+      </div>
     </div>
   );
 };

@@ -28,7 +28,13 @@ import { SHIFT_DEFINITIONS } from '../data/initialSchedule';
 import { ALL_STUDENTS_DATA, TOTAL_STUDENTS_COUNT } from '../data/studentsData';
 import { StudentPickerModal } from './StudentPickerModal';
 import { soundManager } from '../utils/audio';
-import { subscribeToHandoverReports, saveHandoverReportsToSupabase } from '../utils/supabaseBackend';
+import { 
+  getLocalHandoverReports,
+  subscribeToHandoverReports, 
+  saveHandoverReportsToSupabase,
+  deleteHandoverReportFromSupabase,
+  fetchHandoverReportsFromSupabase
+} from '../utils/supabaseBackend';
 
 export const DEFAULT_ACTIVITIES_BY_SHIFT: Record<string, string[]> = {
   PAGI_KE_SORE: [
@@ -158,40 +164,33 @@ export const HandoverReportView: React.FC<HandoverReportViewProps> = ({
 
   // Copy and save feedback
   const [copied, setCopied] = useState<boolean>(false);
+  const [isSavingReport, setIsSavingReport] = useState<boolean>(false);
+  const [justSavedReport, setJustSavedReport] = useState<boolean>(false);
+  const [isSyncingHistory, setIsSyncingHistory] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
   const [showStudentPicker, setShowStudentPicker] = useState<boolean>(false);
   const [pickerTargetId, setPickerTargetId] = useState<string | null>(null);
-  const [savedReports, setSavedReports] = useState<HandoverReport[]>(() => {
-    try {
-      const saved = localStorage.getItem('srt1_handover_reports') || localStorage.getItem('srma24_handover_reports');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [savedReports, setSavedReports] = useState<HandoverReport[]>(() => getLocalHandoverReports());
 
   // Subscribe to Supabase Cloud handover reports
   useEffect(() => {
     const unsubscribe = subscribeToHandoverReports((cloudReports) => {
       if (cloudReports && Array.isArray(cloudReports)) {
         setSavedReports(cloudReports);
-        try {
-          localStorage.setItem('srt1_handover_reports', JSON.stringify(cloudReports));
-        } catch {}
       }
     });
     return () => unsubscribe();
   }, []);
 
   // Save reports to Supabase whenever updated
-  const persistReports = (updated: HandoverReport[]) => {
+  const persistReports = async (updated: HandoverReport[]): Promise<boolean> => {
     setSavedReports(updated);
     try {
-      localStorage.setItem('srt1_handover_reports', JSON.stringify(updated));
-      saveHandoverReportsToSupabase(updated);
+      return await saveHandoverReportsToSupabase(updated);
     } catch (e) {
       console.warn('Failed to save handover reports:', e);
+      return false;
     }
   };
 
@@ -574,41 +573,81 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
     window.open(`https://api.whatsapp.com/send?text=${encoded}`, '_blank');
   };
 
-  // Save report to local storage history
-  const handleSaveReport = () => {
-    const newReport: HandoverReport = {
-      id: Date.now().toString(),
-      dateStr: `${schedule.year}-${String(schedule.month).padStart(2, '0')}-${String(activeDay).padStart(2, '0')}`,
-      day: activeDay,
-      month: schedule.month,
-      year: schedule.year,
-      shiftType,
-      handoverTime,
-      outgoingStaffIds: outgoingStaffList.map(name => staffList.find(s => s.name === name)?.id || 0),
-      outgoingStaffNames: outgoingStaffList,
-      incomingStaffIds: incomingStaffList.map(name => staffList.find(s => s.name === name)?.id || 0),
-      incomingStaffNames: incomingStaffList,
-      studentCountTotal: studentTotal,
-      studentCountPresent: studentPresent,
-      studentCountPermit: 0,
-      studentCountSick: sickStudents.length,
-      studentCountFasting: studentFasting,
-      sickStudents,
-      permits: [],
-      cleanlinessStatus: 'Sangat Bersih',
-      disciplineStatus: 'Kondusif & Tertib',
-      specialIncidents,
-      completedActivities,
-      inventoryNotes: '',
-      notesForNextShift: '',
-      submittedBy: currentStaff.name,
-      submittedAt: new Date().toLocaleString('id-ID'),
-    };
+  // Save report to database and local storage history
+  const handleSaveReport = async () => {
+    if (isSavingReport) return;
+    setIsSavingReport(true);
+    try {
+      const newReport: HandoverReport = {
+        id: Date.now().toString(),
+        dateStr: `${schedule.year}-${String(schedule.month).padStart(2, '0')}-${String(activeDay).padStart(2, '0')}`,
+        day: activeDay,
+        month: schedule.month,
+        year: schedule.year,
+        shiftType,
+        handoverTime,
+        outgoingStaffIds: outgoingStaffList.map(name => staffList.find(s => s.name === name)?.id || 0),
+        outgoingStaffNames: outgoingStaffList,
+        incomingStaffIds: incomingStaffList.map(name => staffList.find(s => s.name === name)?.id || 0),
+        incomingStaffNames: incomingStaffList,
+        studentCountTotal: studentTotal,
+        studentCountPresent: studentPresent,
+        studentCountPermit: 0,
+        studentCountSick: sickStudents.length,
+        studentCountFasting: studentFasting,
+        sickStudents,
+        permits: [],
+        cleanlinessStatus: 'Sangat Bersih',
+        disciplineStatus: 'Kondusif & Tertib',
+        specialIncidents,
+        completedActivities,
+        inventoryNotes: '',
+        notesForNextShift: '',
+        submittedBy: currentStaff.name,
+        submittedAt: new Date().toISOString(),
+      };
 
-    const updated = [newReport, ...savedReports.slice(0, 19)];
-    persistReports(updated);
-    soundManager.playChime();
-    showToast('Laporan serah terima berhasil disimpan ke database Cloud & riwayat!');
+      const currentList = getLocalHandoverReports();
+      const mergedMap = new Map<string, HandoverReport>();
+      mergedMap.set(newReport.id, newReport);
+      [...savedReports, ...currentList].forEach((r) => {
+        if (r && r.id && !mergedMap.has(String(r.id))) {
+          mergedMap.set(String(r.id), r);
+        }
+      });
+
+      const updated = Array.from(mergedMap.values())
+        .sort((a, b) => Number(b.id) - Number(a.id))
+        .slice(0, 500);
+
+      await persistReports(updated);
+      soundManager.playChime();
+      setJustSavedReport(true);
+      setTimeout(() => setJustSavedReport(false), 2500);
+      showToast('Laporan serah terima berhasil disimpan ke database Cloud & riwayat!');
+    } finally {
+      setIsSavingReport(false);
+    }
+  };
+
+  const handleDeleteReport = async (reportId: string) => {
+    const remaining = savedReports.filter((r) => String(r.id) !== String(reportId));
+    setSavedReports(remaining);
+    await deleteHandoverReportFromSupabase(reportId, remaining);
+    soundManager.playGong();
+    showToast('Laporan serah terima dihapus dari riwayat & database.');
+  };
+
+  const handleSyncHistory = async () => {
+    setIsSyncingHistory(true);
+    try {
+      const latest = await fetchHandoverReportsFromSupabase();
+      setSavedReports(latest);
+      soundManager.playChime();
+      showToast(`Sinkronisasi selesai (${latest.length} laporan tersimpan).`);
+    } finally {
+      setIsSyncingHistory(false);
+    }
   };
 
   const showToast = (msg: string) => {
@@ -664,10 +703,21 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
           </button>
           <button
             onClick={handleSaveReport}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-xs font-semibold hover:bg-indigo-100 transition-colors"
+            disabled={isSavingReport}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+              justSavedReport
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100'
+            } disabled:opacity-60`}
           >
-            <BookmarkCheck className="w-3.5 h-3.5" />
-            <span>Simpan</span>
+            {justSavedReport ? (
+              <Check className="w-3.5 h-3.5" />
+            ) : (
+              <BookmarkCheck className="w-3.5 h-3.5" />
+            )}
+            <span>
+              {isSavingReport ? 'Menyimpan...' : justSavedReport ? 'Tersimpan!' : 'Simpan'}
+            </span>
           </button>
           <button
             onClick={handleCopyText}
@@ -1246,9 +1296,9 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
                         </button>
                       </div>
                     ) : (
-                      quickSickResults.map((st) => (
+                      quickSickResults.map((st, idx) => (
                         <button
-                          key={st.id}
+                          key={`quick-sick-${st.no ?? idx}-${st.name}`}
                           type="button"
                           onClick={() => handleQuickAddSickStudent(st)}
                           className="w-full text-left px-3.5 py-2.5 text-xs flex items-center justify-between hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
@@ -1279,7 +1329,7 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
               ) : (
                 <div className="space-y-1.5">
                   {sickStudents.map((sick, idx) => (
-                    <div key={sick.id} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 p-2 rounded-xl border border-rose-200/80 dark:border-rose-900/60 bg-rose-50/40 dark:bg-rose-950/20 shadow-2xs">
+                    <div key={sick.id ? `${sick.id}-${idx}` : `sick-row-${idx}`} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 p-2 rounded-xl border border-rose-200/80 dark:border-rose-900/60 bg-rose-50/40 dark:bg-rose-950/20 shadow-2xs">
                       {/* Nomor & Nama Siswa */}
                       <div className="flex items-center gap-1.5 sm:w-1/2 min-w-[180px]">
                         <span className="w-5 text-center text-xs font-bold font-mono text-rose-700 dark:text-rose-300 shrink-0">
@@ -1480,11 +1530,22 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
               </button>
               <button
                 onClick={handleSaveReport}
-                className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs transition-colors flex items-center gap-1"
-                title="Simpan Laporan ke Riwayat"
+                disabled={isSavingReport}
+                className={`px-3 py-2 rounded-lg font-semibold text-xs transition-colors flex items-center gap-1 cursor-pointer ${
+                  justSavedReport
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                } disabled:opacity-60`}
+                title="Simpan Laporan ke Database & Riwayat"
               >
-                <BookmarkCheck className="w-4 h-4 text-indigo-400" />
-                <span>Simpan</span>
+                {justSavedReport ? (
+                  <Check className="w-4 h-4 text-white" />
+                ) : (
+                  <BookmarkCheck className="w-4 h-4 text-indigo-400" />
+                )}
+                <span>
+                  {isSavingReport ? 'Menyimpan...' : justSavedReport ? 'Tersimpan!' : 'Simpan'}
+                </span>
               </button>
             </div>
           </div>
@@ -1635,15 +1696,26 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
               <div className="flex items-center gap-2">
                 <History className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <h3 className="font-bold text-sm text-slate-900 dark:text-white">
-                  Riwayat Laporan Serah Terima Tersimpan
+                  Riwayat Laporan Serah Terima Tersimpan ({savedReports.length})
                 </h3>
               </div>
-              <button
-                onClick={() => setShowHistoryModal(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs font-bold px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-700"
-              >
-                Tutup
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleSyncHistory}
+                  disabled={isSyncingHistory}
+                  className="text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/50 text-xs font-bold px-2.5 py-1 rounded-lg border border-blue-200 dark:border-blue-800 flex items-center gap-1 transition-colors"
+                  title="Sinkronkan dari Database Cloud"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${isSyncingHistory ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingHistory ? 'Sinkronisasi...' : 'Sinkron Cloud'}</span>
+                </button>
+                <button
+                  onClick={() => setShowHistoryModal(false)}
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs font-bold px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-700"
+                >
+                  Tutup
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
@@ -1652,12 +1724,12 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
                   Belum ada riwayat laporan yang disimpan. Tekan tombol <strong>"Simpan"</strong> saat selesai mengisi laporan.
                 </div>
               ) : (
-                savedReports.map((rep) => (
+                savedReports.map((rep, idx) => (
                   <div
-                    key={rep.id}
+                    key={rep.id ? `${rep.id}-${idx}` : `report-${idx}`}
                     className="p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 space-y-1.5 text-xs"
                   >
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="font-bold text-slate-900 dark:text-white">
                         Tgl {rep.day}/{rep.month}/{rep.year} • Shif {rep.shiftType} ({rep.handoverTime} WIB)
                       </span>
@@ -1672,31 +1744,45 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
                       <span>•</span>
                       <span>Puasa: <strong>{rep.studentCountFasting || 0}</strong></span>
                     </div>
-                    <div className="pt-1 flex items-center justify-between text-[10px]">
-                      <span className="text-slate-400">Petugas Lanjutan: {rep.incomingStaffNames?.slice(0, 3).join(', ')}...</span>
-                      <button
-                        onClick={() => {
-                          setShiftType(rep.shiftType);
-                          setHandoverTime(rep.handoverTime);
-                          setStudentTotal(rep.studentCountTotal);
-                          setStudentPresent(rep.studentCountPresent);
-                          setSickStudents(rep.sickStudents || []);
-                          setStudentFasting(rep.studentCountFasting || 0);
-                          setSpecialIncidents(rep.specialIncidents);
-                          if (rep.completedActivities && rep.completedActivities.length > 0) {
-                            setCompletedActivities(rep.completedActivities);
-                          } else {
-                            setCompletedActivities(getDefaultActivitiesForShift(rep.shiftType || shiftType));
-                          }
-                          if (rep.outgoingStaffNames) setOutgoingStaffList(rep.outgoingStaffNames);
-                          if (rep.incomingStaffNames) setIncomingStaffList(rep.incomingStaffNames);
-                          setShowHistoryModal(false);
-                          showToast('Data laporan berhasil dimuat ke editor!');
-                        }}
-                        className="px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-bold border border-blue-200 dark:border-blue-800 hover:bg-blue-100"
-                      >
-                        Muat ke Editor
-                      </button>
+                    <div className="pt-1 flex items-center justify-between gap-2 text-[10px]">
+                      <span className="text-slate-400 truncate">
+                        Petugas Lanjutan: {rep.incomingStaffNames?.slice(0, 3).join(', ') || '-'}
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => {
+                            if (rep.day >= 1 && rep.day <= schedule.totalDays) {
+                              setActiveDay(rep.day);
+                            }
+                            setShiftType(rep.shiftType);
+                            setHandoverTime(rep.handoverTime);
+                            setStudentTotal(rep.studentCountTotal);
+                            setStudentPresent(rep.studentCountPresent);
+                            setSickStudents(rep.sickStudents || []);
+                            setStudentFasting(rep.studentCountFasting || 0);
+                            setSpecialIncidents(rep.specialIncidents);
+                            if (rep.completedActivities && rep.completedActivities.length > 0) {
+                              setCompletedActivities(rep.completedActivities);
+                            } else {
+                              setCompletedActivities(getDefaultActivitiesForShift(rep.shiftType || shiftType));
+                            }
+                            if (rep.outgoingStaffNames) setOutgoingStaffList(rep.outgoingStaffNames);
+                            if (rep.incomingStaffNames) setIncomingStaffList(rep.incomingStaffNames);
+                            setShowHistoryModal(false);
+                            showToast('Data laporan berhasil dimuat ke editor!');
+                          }}
+                          className="px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-bold border border-blue-200 dark:border-blue-800 hover:bg-blue-100"
+                        >
+                          Muat ke Editor
+                        </button>
+                        <button
+                          onClick={() => handleDeleteReport(rep.id)}
+                          className="p-1 rounded bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 hover:bg-rose-100"
+                          title="Hapus laporan ini"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))
@@ -1719,8 +1805,8 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
 
       {/* Datalist for autocomplete on direct typing */}
       <datalist id="all-students-names">
-        {ALL_STUDENTS_DATA.map((st) => (
-          <option key={st.no} value={`${st.name} (${st.class})`}>
+        {ALL_STUDENTS_DATA.map((st, idx) => (
+          <option key={`student-opt-${st.no ?? idx}-${st.name}`} value={`${st.name} (${st.class})`}>
             {`#${st.no} - ${st.gender} | Ibu: ${st.motherName}`}
           </option>
         ))}
@@ -1728,8 +1814,8 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
 
       {/* Datalist for staff selection */}
       <datalist id="staff-names-list">
-        {staffList.map((st) => (
-          <option key={st.id} value={st.name}>
+        {staffList.map((st, idx) => (
+          <option key={`staff-opt-${st.id ?? idx}-${st.name}`} value={st.name}>
             {`${st.code || ''} - ${st.role}`}
           </option>
         ))}

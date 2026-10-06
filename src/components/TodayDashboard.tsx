@@ -37,7 +37,7 @@ import {
   Building2,
   MapPin
 } from 'lucide-react';
-import { MonthSchedule, Staff, ShiftCode, DailyTask, AnnouncementData, StudentMedicalPlan, P5TaskAssignment, MorningPostAssignment } from '../types';
+import { MonthSchedule, Staff, ShiftCode, DailyTask, AnnouncementData, StudentMedicalPlan, P5TaskAssignment, MorningPostAssignment, MedicalGuardCustomOption } from '../types';
 import { SHIFT_DEFINITIONS, SHIFT_TASKS_TEMPLATE } from '../data/initialSchedule';
 import { calculateDailyStats, INDONESIAN_MONTH_NAMES, INDONESIAN_DAY_NAMES, validateShiftAssignment } from '../utils/scheduler';
 import { generateDailySchedulePDF } from '../utils/pdfExport';
@@ -48,7 +48,11 @@ import {
   subscribeToAnnouncement, 
   saveAnnouncementToSupabase, 
   getLocalAnnouncement, 
-  DEFAULT_ANNOUNCEMENT 
+  DEFAULT_ANNOUNCEMENT,
+  fetchDailyLogbook,
+  syncDailyLogbook,
+  fetchMonthTasksCompletion,
+  syncMonthTasksCompletion
 } from '../utils/supabaseBackend';
 import { getLocalP5Assignments, subscribeToP5Assignments } from '../utils/p5TaskService';
 import { P5TaskAssignmentModal } from './P5TaskAssignmentModal';
@@ -58,8 +62,12 @@ import {
   saveMorningPostAssignmentToSupabase,
   deleteMorningPostAssignment,
   updateStaffQuranAssistance,
+  updateStaffMedicalGuardLabel,
   clearStaffMainPost,
-  DEFAULT_QURAN_ASSISTANCE_OPTIONS
+  DEFAULT_QURAN_ASSISTANCE_OPTIONS,
+  getLocalMedicalGuardOptions,
+  subscribeToMedicalGuardOptions,
+  saveMedicalGuardOptions
 } from '../utils/morningPostService';
 import { MorningPostAssignmentModal } from './MorningPostAssignmentModal';
 import { LeaveProofUploadModal } from './LeaveProofUploadModal';
@@ -135,10 +143,16 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
     getLocalP5Assignments(schedule.year, schedule.month)
   );
 
-  const [morningPostModalTarget, setMorningPostModalTarget] = useState<{ day: number; staff: Staff; shiftCode: 'P1' | 'P2' | 'P3' } | null>(null);
+  const [morningPostModalTarget, setMorningPostModalTarget] = useState<{ day: number; staff: Staff; shiftCode: ShiftCode | string } | null>(null);
   const [morningPostAssignments, setMorningPostAssignments] = useState<Record<string, MorningPostAssignment>>(() =>
     getLocalMorningPostAssignments(schedule.year, schedule.month)
   );
+  const [medicalGuardOptions, setMedicalGuardOptions] = useState<MedicalGuardCustomOption[]>(() =>
+    getLocalMedicalGuardOptions()
+  );
+  const [activeMedShiftTab, setActiveMedShiftTab] = useState<'pagi' | 'sore' | 'malam'>('pagi');
+  const [activeMedStaffId, setActiveMedStaffId] = useState<number | null>(null);
+  const [customMedLabelInput, setCustomMedLabelInput] = useState<string>('');
 
   const [leaveRecords, setLeaveRecords] = useState<Record<string, LeavePermissionRecord>>(() =>
     getLocalLeaveRecords(schedule.year, schedule.month)
@@ -201,12 +215,16 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
     const unsub = subscribeToMorningPostAssignments(schedule.year, schedule.month, (data) => {
       setMorningPostAssignments(data);
     });
+    const unsubMed = subscribeToMedicalGuardOptions((opts) => {
+      setMedicalGuardOptions(opts);
+    });
     const handleCustomUpdate = () => {
       setMorningPostAssignments(getLocalMorningPostAssignments(schedule.year, schedule.month));
     };
     window.addEventListener('morning_post_assignments_updated', handleCustomUpdate);
     return () => {
       unsub();
+      unsubMed();
       window.removeEventListener('morning_post_assignments_updated', handleCustomUpdate);
     };
   }, [schedule.year, schedule.month]);
@@ -254,7 +272,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
     return () => clearInterval(interval);
   }, []);
 
-  // Update log text when activeDay changes
+  // Update log text and sync with cloud when activeDay changes
   useEffect(() => {
     try {
       const text = localStorage.getItem(`logbook_${schedule.year}_${schedule.month}_${activeDay}`) || '';
@@ -262,7 +280,25 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
     } catch {
       setLogBookText('');
     }
+    fetchDailyLogbook(schedule.year, schedule.month, activeDay).then((remoteText) => {
+      if (typeof remoteText === 'string' && remoteText.length > 0) {
+        setLogBookText(remoteText);
+      }
+    }).catch(() => {});
   }, [activeDay, schedule.year, schedule.month]);
+
+  // Sync monthly task completion checklist across devices
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(`tasks_${schedule.year}_${schedule.month}`);
+      if (saved) setCompletedTasks(JSON.parse(saved));
+    } catch {}
+    fetchMonthTasksCompletion(schedule.year, schedule.month).then((remoteTasks) => {
+      if (remoteTasks && typeof remoteTasks === 'object') {
+        setCompletedTasks(remoteTasks);
+      }
+    }).catch(() => {});
+  }, [schedule.year, schedule.month]);
 
   const showToast = (msg: string) => {
     setDownloadToast(msg);
@@ -296,6 +332,10 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
       if (shift === 'M1') pos = 'Piket Malam - Sesi 1 (15:00 - 00:00)';
       if (shift === 'M2') pos = 'Piket Malam - Sesi 2 (Subuh - 07:00)';
       if (shift === 'M3') pos = 'Piket Malam Pendamping (23:00 - 07:00)';
+      const assign = morningPostAssignments[`${activeDay}_${staff.id}`];
+      if (assign?.postTitle) pos += ` | Pos: ${assign.postTitle}`;
+      if (assign?.quranAssistance) pos += ` | Mengaji: ${assign.quranAssistance}`;
+      if (assign?.medicalGuardLabel) pos += ` | Medis: ${assign.medicalGuardLabel}`;
 
       csv += `${staff.id},"${staff.name}","${staff.role}",${shift},"${sInfo.name}","${sInfo.startTime} - ${sInfo.endTime}","${pos}"\n`;
     });
@@ -324,7 +364,13 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
       const shift = schedule.days[activeDay]?.[staff.id] || 'O';
       const sInfo = SHIFT_DEFINITIONS[shift];
       if (shift !== 'O' && shift !== 'LP') {
-        text += `• ${staff.name}: *[${shift}]* ${sInfo.name} (${sInfo.startTime} - ${sInfo.endTime})\n`;
+        const assign = morningPostAssignments[`${activeDay}_${staff.id}`];
+        const extras: string[] = [];
+        if (assign?.postTitle) extras.push(`Pos: ${assign.postTitle}`);
+        if (assign?.quranAssistance) extras.push(`📖 ${assign.quranAssistance}`);
+        if (assign?.medicalGuardLabel) extras.push(`🏥 ${assign.medicalGuardLabel}`);
+        const extraStr = extras.length > 0 ? ` — _(${extras.join(' • ')})_` : '';
+        text += `• ${staff.name}: *[${shift}]* ${sInfo.name} (${sInfo.startTime} - ${sInfo.endTime})${extraStr}\n`;
       }
     });
 
@@ -335,6 +381,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
   const handleSaveLogBook = () => {
     try {
       localStorage.setItem(`logbook_${schedule.year}_${schedule.month}_${activeDay}`, logBookText);
+      syncDailyLogbook(schedule.year, schedule.month, activeDay, logBookText).catch(() => {});
       setLogSavedToast(true);
       soundManager.playChime();
       setTimeout(() => setLogSavedToast(false), 2500);
@@ -350,6 +397,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
     setCompletedTasks(updated);
     try {
       localStorage.setItem(`tasks_${schedule.year}_${schedule.month}`, JSON.stringify(updated));
+      syncMonthTasksCompletion(schedule.year, schedule.month, updated).catch(() => {});
     } catch (e) {
       console.error(e);
     }
@@ -797,10 +845,21 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                   type="button"
                   onClick={() => setMorningPostModalTarget({ day: activeDay, staff: selectedStaff, shiftCode: userTodayShift as 'P1' | 'P2' | 'P3' })}
                   className="px-2 py-0.5 rounded bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all"
-                  title={`Tentukan pos tugas ${userTodayShift} (UKS SD / SMP / SMA / Mobile) - Khusus Admin`}
+                  title={`Tentukan pos tugas ${userTodayShift} (UKS SD / SMP / SMA / Mobile / Puskesmas / RS) - Khusus Admin`}
                 >
                   <Edit3 className="w-2.5 h-2.5" />
                   <span>Atur Pos {userTodayShift}</span>
+                </button>
+              )}
+              {['P', 'P1', 'P2', 'P3', 'P4', 'P5', 'S', 'S2A', 'S3A', 'S4A', 'M', 'M1', 'M2', 'M3'].includes(userTodayShift) && userRole === 'admin' && (
+                <button
+                  type="button"
+                  onClick={() => setMorningPostModalTarget({ day: activeDay, staff: selectedStaff, shiftCode: userTodayShift })}
+                  className="px-2 py-0.5 rounded bg-rose-500 hover:bg-rose-400 text-white text-[10px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all"
+                  title="Sematkan tugas tambahan Jaga Puskesmas / Jaga Rumah Sakit / Label Kustom (Khusus Admin)"
+                >
+                  <span>🏥</span>
+                  <span>Sematkan Puskesmas/RS</span>
                 </button>
               )}
               {userTodayShift === 'IZIN' && userRole === 'admin' && (
@@ -843,6 +902,11 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                         📖 Mendampingi {morningPostAssignments[`${activeDay}_${selectedStaff.id}`]?.quranAssistance.replace(/^mendampingi\s*/i, '')}
                       </span>
                     )}
+                    {morningPostAssignments[`${activeDay}_${selectedStaff.id}`]?.medicalGuardLabel && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500 text-white font-black text-xs shadow-2xs ring-1 ring-white/50">
+                        🏥 {morningPostAssignments[`${activeDay}_${selectedStaff.id}`]?.medicalGuardLabel}
+                      </span>
+                    )}
                   </span>
                   . Melaksanakan bimbingan keterampilan & pendampingan vokasi santri di jam 07:00 – 15:00 WIB.
                 </span>
@@ -864,6 +928,11 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                         📖 Mendampingi {morningPostAssignments[`${activeDay}_${selectedStaff.id}`]?.quranAssistance.replace(/^mendampingi\s*/i, '')}
                       </span>
                     )}
+                    {morningPostAssignments[`${activeDay}_${selectedStaff.id}`]?.medicalGuardLabel && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500 text-white font-black text-xs shadow-2xs ring-1 ring-white/50">
+                        🏥 {morningPostAssignments[`${activeDay}_${selectedStaff.id}`]?.medicalGuardLabel}
+                      </span>
+                    )}
                   </span>
                   . {shiftMeta.description}
                 </span>
@@ -876,7 +945,14 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                   ) : ''}
                 </span>
               ) : (
-                shiftMeta.description
+                <span>
+                  {morningPostAssignments[`${activeDay}_${selectedStaff.id}`]?.medicalGuardLabel && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500 text-white font-black text-xs shadow-2xs ring-1 ring-white/50 mr-1.5 align-middle">
+                      🏥 {morningPostAssignments[`${activeDay}_${selectedStaff.id}`]?.medicalGuardLabel}
+                    </span>
+                  )}
+                  {shiftMeta.description}
+                </span>
               )}
             </p>
             <div className="flex flex-wrap items-center gap-2.5 text-[10.5px] font-medium text-white/90 pt-0.5">
@@ -1333,6 +1409,284 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
         );
       })()}
 
+      {/* Banner Penyematan Tugas Jaga Puskesmas & Jaga Rumah Sakit Lintas Shif (Pagi, Sore, Malam + Bisa Custom) - KHUSUS ADMIN */}
+      {userRole === 'admin' && (() => {
+        const currentShiftStaffList =
+          activeMedShiftTab === 'pagi'
+            ? dailyStats.pagiWali
+            : activeMedShiftTab === 'sore'
+            ? dailyStats.soreWali
+            : dailyStats.malamWali;
+
+        const targetMedStaff =
+          (activeMedStaffId ? currentShiftStaffList.find((s) => s.id === activeMedStaffId) : null) ||
+          currentShiftStaffList[0] ||
+          null;
+
+        const targetShiftCode = targetMedStaff ? (schedule.days[activeDay]?.[targetMedStaff.id] || 'P1') : 'P1';
+        const currentMedAssign = targetMedStaff ? morningPostAssignments[`${activeDay}_${targetMedStaff.id}`] : undefined;
+        const currentMedLabel = currentMedAssign?.medicalGuardLabel;
+
+        return (
+          <div className="rounded-xl bg-gradient-to-r from-rose-950/90 via-slate-900 to-indigo-950/90 text-white px-3 py-2.5 sm:px-4 sm:py-3 border-2 border-rose-500 shadow-md space-y-2.5">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+              <div className="space-y-0.5">
+                <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-200 border border-rose-400/40 text-[10px] font-bold">
+                  <span>🏥</span>
+                  <span>PENYEMATAN JAGA PUSKESMAS & RUMAH SAKIT (SHIF PAGI • SORE • MALAM) • BISA CUSTOM</span>
+                </div>
+                <h4 className="text-xs sm:text-sm font-black text-rose-100 flex flex-wrap items-center gap-1.5">
+                  <span>Sematkan Label Tugas Jaga Puskesmas, Jaga Rumah Sakit, atau Kustom di Semua Shif</span>
+                </h4>
+                <p className="text-[11px] text-rose-100/90 leading-snug max-w-3xl">
+                  {targetMedStaff ? (
+                    <>
+                      Petugas sedang dipilih: <strong>{targetMedStaff.name}</strong> (Shif <strong>{targetShiftCode}</strong>) • Status Penyematan:{' '}
+                      <strong className={currentMedLabel ? 'text-amber-300 underline font-black' : 'text-rose-200/80 italic'}>
+                        {currentMedLabel ? `🏥 ${currentMedLabel}` : 'Belum Ada Penyematan Puskesmas / RS'}
+                      </strong>
+                    </>
+                  ) : (
+                    <span>Tidak ada petugas di kelompok shif ini pada tanggal {activeDay}.</span>
+                  )}
+                </p>
+              </div>
+
+              {/* Shift Period Switcher: Shif Pagi / Shif Sore / Shif Malam */}
+              <div className="flex items-center gap-1 bg-black/30 p-1 rounded-lg border border-white/15 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveMedShiftTab('pagi');
+                    setActiveMedStaffId(null);
+                    soundManager.playClick();
+                  }}
+                  className={`px-2.5 py-1 rounded-md text-[10.5px] font-extrabold transition-all cursor-pointer flex items-center gap-1 ${
+                    activeMedShiftTab === 'pagi'
+                      ? 'bg-sky-500 text-white shadow-xs'
+                      : 'text-white/75 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  <Sun className="w-3 h-3" />
+                  <span>Shif Pagi ({dailyStats.pagiWali.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveMedShiftTab('sore');
+                    setActiveMedStaffId(null);
+                    soundManager.playClick();
+                  }}
+                  className={`px-2.5 py-1 rounded-md text-[10.5px] font-extrabold transition-all cursor-pointer flex items-center gap-1 ${
+                    activeMedShiftTab === 'sore'
+                      ? 'bg-orange-500 text-white shadow-xs'
+                      : 'text-white/75 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  <Sunset className="w-3 h-3" />
+                  <span>Shif Sore ({dailyStats.soreWali.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveMedShiftTab('malam');
+                    setActiveMedStaffId(null);
+                    soundManager.playClick();
+                  }}
+                  className={`px-2.5 py-1 rounded-md text-[10.5px] font-extrabold transition-all cursor-pointer flex items-center gap-1 ${
+                    activeMedShiftTab === 'malam'
+                      ? 'bg-indigo-500 text-white shadow-xs'
+                      : 'text-white/75 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  <Moon className="w-3 h-3" />
+                  <span>Shif Malam ({dailyStats.malamWali.length})</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Staff Selector for Selected Shift Group */}
+            {currentShiftStaffList.length > 0 && targetMedStaff && (
+              <>
+                <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-white/10">
+                  <span className="text-[10px] text-rose-300 font-bold">
+                    Pilih Petugas {activeMedShiftTab === 'pagi' ? 'Pagi' : activeMedShiftTab === 'sore' ? 'Sore' : 'Malam'}:
+                  </span>
+                  {currentShiftStaffList.map((st) => {
+                    const isCurrent = st.id === targetMedStaff.id;
+                    const stShift = schedule.days[activeDay]?.[st.id] || 'P1';
+                    const medLabel = morningPostAssignments[`${activeDay}_${st.id}`]?.medicalGuardLabel;
+                    return (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() => setActiveMedStaffId(st.id)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-all cursor-pointer flex items-center gap-1 ${
+                          isCurrent
+                            ? 'bg-rose-500 text-white border-white shadow-xs font-black ring-1 ring-rose-300'
+                            : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
+                        }`}
+                      >
+                        <span>{st.name}</span>
+                        <span className={`text-[8.5px] px-1 rounded ${isCurrent ? 'bg-slate-950 text-rose-200' : 'bg-white/20 text-amber-200'}`}>
+                          {stShift}
+                        </span>
+                        {medLabel && (
+                          <span className="text-[8.5px] px-1 rounded bg-amber-400 text-slate-950 font-black">
+                            🏥 {medLabel}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Quick Pinning Buttons: Jaga Puskesmas, Jaga Rumah Sakit, Custom Options & Custom Input */}
+                <div className="pt-2 border-t border-rose-500/30 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-[10.5px] font-bold text-rose-200 flex items-center gap-1.5">
+                      <span>🏥</span>
+                      <span>PILIH LABEL PENYEMATAN UNTUK {targetMedStaff.name.toUpperCase()} [{targetShiftCode}]:</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMorningPostModalTarget({ day: activeDay, staff: targetMedStaff, shiftCode: targetShiftCode })}
+                      className="text-[10px] px-2 py-0.5 rounded bg-white/15 hover:bg-white/25 text-white font-bold flex items-center gap-1 cursor-pointer border border-white/20"
+                    >
+                      <Edit3 className="w-2.5 h-2.5" />
+                      <span>Buka Modal Lengkap</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                    {medicalGuardOptions.map((mOpt) => {
+                      const isMedSelected = currentMedLabel === mOpt.label;
+                      return (
+                        <button
+                          key={mOpt.id}
+                          type="button"
+                          onClick={async () => {
+                            const nextVal = isMedSelected ? undefined : mOpt.label;
+                            await updateStaffMedicalGuardLabel(
+                              schedule.year,
+                              schedule.month,
+                              activeDay,
+                              targetMedStaff.id,
+                              targetMedStaff.name,
+                              targetShiftCode,
+                              nextVal
+                            );
+                            setMorningPostAssignments(getLocalMorningPostAssignments(schedule.year, schedule.month));
+                            soundManager.playChime();
+                            showToast(
+                              nextVal
+                                ? `Label "🏥 ${nextVal}" berhasil disematkan pada ${targetMedStaff.name} (${targetShiftCode})!`
+                                : `Label penyematan pada ${targetMedStaff.name} dilepas.`
+                            );
+                          }}
+                          className={`px-2.5 py-1.5 rounded-lg text-left transition-all border cursor-pointer flex flex-col justify-between ${
+                            isMedSelected
+                              ? 'bg-rose-500 text-white font-black border-white ring-2 ring-rose-300 shadow-md scale-[1.01]'
+                              : 'bg-rose-950/50 hover:bg-rose-900/60 text-rose-100 border-rose-500/40'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-xs font-bold gap-1">
+                            <span className="truncate">🏥 {mOpt.label}</span>
+                            {isMedSelected && <Check className="w-3.5 h-3.5 text-white shrink-0" />}
+                          </div>
+                          <span className={`text-[9px] mt-0.5 truncate ${isMedSelected ? 'text-rose-100 font-semibold' : 'text-rose-300/80'}`}>
+                            {mOpt.desc || 'Klik untuk sematkan'}
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    {/* Tombol Lepas / Tanpa Jaga Puskesmas & RS */}
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await updateStaffMedicalGuardLabel(
+                          schedule.year,
+                          schedule.month,
+                          activeDay,
+                          targetMedStaff.id,
+                          targetMedStaff.name,
+                          targetShiftCode,
+                          undefined
+                        );
+                        setMorningPostAssignments(getLocalMorningPostAssignments(schedule.year, schedule.month));
+                        soundManager.playClick();
+                        showToast(`Penyematan Puskesmas/RS untuk ${targetMedStaff.name} telah dihapus.`);
+                      }}
+                      className={`px-2.5 py-1.5 rounded-lg text-left transition-all border cursor-pointer flex flex-col justify-between ${
+                        !currentMedLabel
+                          ? 'bg-slate-800 text-white/80 border-white/20'
+                          : 'bg-slate-900/70 hover:bg-rose-900/50 text-rose-200 border-rose-500/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-xs font-bold">
+                        <span className="flex items-center gap-1">
+                          <X className="w-3 h-3 text-rose-400" />
+                          <span>Tanpa Puskesmas/RS</span>
+                        </span>
+                        {!currentMedLabel && <Check className="w-3.5 h-3.5 text-slate-400" />}
+                      </div>
+                      <span className="text-[9px] mt-0.5 text-white/60">
+                        Hapus label medis petugas ini
+                      </span>
+                    </button>
+                  </div>
+
+                  {/* Quick Custom Label Input Bar */}
+                  <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5 pt-1">
+                    <input
+                      type="text"
+                      value={customMedLabelInput}
+                      onChange={(e) => setCustomMedLabelInput(e.target.value)}
+                      placeholder={`Ketik penyematan custom untuk ${targetMedStaff.name} (contoh: Jaga RSUD SLG / Jaga Puskesmas Semen)...`}
+                      className="w-full sm:flex-1 text-xs px-2.5 py-1.5 rounded-lg bg-black/35 border border-rose-400/40 text-white placeholder-rose-200/60 focus:outline-none focus:ring-1 focus:ring-rose-400"
+                    />
+                    <button
+                      type="button"
+                      disabled={!customMedLabelInput.trim()}
+                      onClick={async () => {
+                        const trimmed = customMedLabelInput.trim();
+                        if (!trimmed) return;
+                        // Save to master options if not yet present
+                        if (!medicalGuardOptions.some((o) => o.label.toLowerCase() === trimmed.toLowerCase())) {
+                          const nextOpts: MedicalGuardCustomOption[] = [
+                            ...medicalGuardOptions,
+                            { id: `med_${Date.now()}`, label: trimmed, desc: 'Label tugas kustom', isDefault: false },
+                          ];
+                          await saveMedicalGuardOptions(nextOpts);
+                          setMedicalGuardOptions(nextOpts);
+                        }
+                        await updateStaffMedicalGuardLabel(
+                          schedule.year,
+                          schedule.month,
+                          activeDay,
+                          targetMedStaff.id,
+                          targetMedStaff.name,
+                          targetShiftCode,
+                          trimmed
+                        );
+                        setMorningPostAssignments(getLocalMorningPostAssignments(schedule.year, schedule.month));
+                        setCustomMedLabelInput('');
+                        soundManager.playChime();
+                        showToast(`Label custom "🏥 ${trimmed}" berhasil disematkan pada ${targetMedStaff.name}!`);
+                      }}
+                      className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 disabled:opacity-40 text-slate-950 font-black text-xs cursor-pointer transition-all shrink-0"
+                    >
+                      + Sematkan & Simpan Label Custom
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Real-Time Shift Overview Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
         {/* Shif Pagi */}
@@ -1363,6 +1717,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                 const morningAssignment = morningPostAssignments[`${activeDay}_${st.id}`];
                 const morningPost = (isP1 || isP2 || isP3) ? morningAssignment?.postTitle : null;
                 const quranAssistance = morningAssignment?.quranAssistance;
+                const medicalGuardLabel = morningAssignment?.medicalGuardLabel;
                 const badgeClass = isP1
                   ? 'bg-sky-600 text-white'
                   : isP2
@@ -1379,7 +1734,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                     key={st.id}
                     className="flex items-center justify-between text-[11px] py-0.5 px-1.5 rounded bg-sky-50/70 dark:bg-sky-950/40 text-slate-800 dark:text-slate-200 gap-1"
                   >
-                    <div className="flex items-center gap-1 truncate min-w-0">
+                    <div className="flex items-center gap-1 flex-wrap min-w-0">
                       <span className="font-medium truncate">{st.name}</span>
                       {shiftCode === 'P4' && (
                         <span className="text-[8.5px] text-cyan-700 dark:text-cyan-300 shrink-0 font-bold">(Kunjungan)</span>
@@ -1407,7 +1762,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                         <span 
                           onClick={() => {
                             if (userRole === 'admin') {
-                              setActiveMorningStaffId(st.id);
+                              setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode: shiftCode || 'P1' });
                             }
                           }}
                           className={`text-[9px] px-1.5 py-0.2 rounded font-bold bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 flex items-center gap-0.5 shrink-0 ${
@@ -1417,6 +1772,22 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                         >
                           <span>📖</span>
                           <span>{quranAssistance}</span>
+                        </span>
+                      )}
+                      {medicalGuardLabel && (
+                        <span
+                          onClick={() => {
+                            if (userRole === 'admin') {
+                              setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode: shiftCode || 'P1' });
+                            }
+                          }}
+                          className={`text-[9px] px-1.5 py-0.2 rounded font-bold bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-700 flex items-center gap-0.5 shrink-0 ${
+                            userRole === 'admin' ? 'cursor-pointer hover:bg-rose-200' : ''
+                          }`}
+                          title={`Penyematan Medis: ${medicalGuardLabel}`}
+                        >
+                          <span>🏥</span>
+                          <span>{medicalGuardLabel}</span>
                         </span>
                       )}
                       {isP5 && (
@@ -1436,17 +1807,11 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                     <span 
                       onClick={() => {
                         if (userRole === 'admin') {
-                          if (isP5) {
-                            setP5ModalTarget({ day: activeDay, staff: st });
-                          } else if (isP1 || isP2 || isP3) {
-                            setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode: isP1 ? 'P1' : isP2 ? 'P2' : 'P3' });
-                          } else {
-                            setActiveMorningStaffId(st.id);
-                          }
+                          setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode: shiftCode || 'P1' });
                         }
                       }}
                       className={`text-[9.5px] font-bold px-1.5 py-0.2 rounded shrink-0 ${badgeClass} ${userRole === 'admin' ? 'cursor-pointer hover:opacity-85' : ''}`}
-                      title={userRole === 'admin' ? 'Klik untuk atur penugasan pos/tugas' : undefined}
+                      title={userRole === 'admin' ? 'Klik untuk atur penugasan pos / Jaga Puskesmas / RS' : undefined}
                     >
                       {shiftCode}
                     </span>
@@ -1479,6 +1844,8 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
             {dailyStats.soreWali.length > 0 ? (
               dailyStats.soreWali.map((st) => {
                 const shiftCode = schedule.days[activeDay]?.[st.id] || 'S';
+                const soreAssign = morningPostAssignments[`${activeDay}_${st.id}`];
+                const medicalGuardLabel = soreAssign?.medicalGuardLabel;
                 let badgeBg = 'bg-orange-200 dark:bg-orange-800 text-orange-900 dark:text-orange-100';
                 let postLabel = '';
                 if (shiftCode === 'S2A') {
@@ -1497,13 +1864,46 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                     key={st.id}
                     className="flex items-center justify-between text-[11px] py-0.5 px-1.5 rounded bg-orange-50/70 dark:bg-orange-950/40 text-slate-800 dark:text-slate-200 gap-1"
                   >
-                    <div className="flex items-center gap-1 truncate">
+                    <div className="flex items-center gap-1 flex-wrap min-w-0">
                       <span className="font-medium truncate">{st.name}</span>
                       {postLabel && (
                         <span className="text-[8.5px] text-slate-500 dark:text-slate-400 shrink-0">({postLabel})</span>
                       )}
+                      {medicalGuardLabel ? (
+                        <span
+                          onClick={() => {
+                            if (userRole === 'admin') {
+                              setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode });
+                            }
+                          }}
+                          className={`text-[9px] px-1.5 py-0.2 rounded font-bold bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-700 flex items-center gap-0.5 shrink-0 ${
+                            userRole === 'admin' ? 'cursor-pointer hover:bg-rose-200' : ''
+                          }`}
+                          title={`Penyematan Medis: ${medicalGuardLabel} (Klik untuk ubah)`}
+                        >
+                          <span>🏥</span>
+                          <span>{medicalGuardLabel}</span>
+                        </span>
+                      ) : userRole === 'admin' ? (
+                        <button
+                          type="button"
+                          onClick={() => setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode })}
+                          className="text-[8.5px] px-1 py-0.2 rounded bg-white/80 dark:bg-slate-800 text-rose-600 dark:text-rose-400 border border-rose-300 dark:border-rose-700 border-dashed hover:bg-rose-50 cursor-pointer shrink-0 font-semibold"
+                          title="Sematkan Jaga Puskesmas / Jaga Rumah Sakit / Label Kustom"
+                        >
+                          + Puskesmas/RS
+                        </button>
+                      ) : null}
                     </div>
-                    <span className={`text-[9.5px] font-bold px-1 py-0.2 rounded shrink-0 ${badgeBg}`}>
+                    <span
+                      onClick={() => {
+                        if (userRole === 'admin') {
+                          setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode });
+                        }
+                      }}
+                      className={`text-[9.5px] font-bold px-1 py-0.2 rounded shrink-0 ${badgeBg} ${userRole === 'admin' ? 'cursor-pointer hover:opacity-85' : ''}`}
+                      title={userRole === 'admin' ? 'Klik untuk sematkan Jaga Puskesmas / Rumah Sakit' : undefined}
+                    >
                       {shiftCode}
                     </span>
                   </div>
@@ -1535,6 +1935,8 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
             {dailyStats.malamWali.length > 0 ? (
               dailyStats.malamWali.map((st) => {
                 const shiftCode = schedule.days[activeDay]?.[st.id] || 'M';
+                const malamAssign = morningPostAssignments[`${activeDay}_${st.id}`];
+                const medicalGuardLabel = malamAssign?.medicalGuardLabel;
                 let badgeBg = 'bg-blue-600 text-white';
                 let postLabel = '';
                 if (shiftCode === 'M1') {
@@ -1553,13 +1955,46 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                     key={st.id}
                     className="flex items-center justify-between text-[11px] py-0.5 px-1.5 rounded bg-blue-50/70 dark:bg-blue-950/40 text-slate-800 dark:text-slate-200 gap-1"
                   >
-                    <div className="flex items-center gap-1 truncate">
+                    <div className="flex items-center gap-1 flex-wrap min-w-0">
                       <span className="font-medium truncate">{st.name}</span>
                       {postLabel && (
                         <span className="text-[8.5px] text-slate-500 dark:text-slate-400 shrink-0">({postLabel})</span>
                       )}
+                      {medicalGuardLabel ? (
+                        <span
+                          onClick={() => {
+                            if (userRole === 'admin') {
+                              setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode });
+                            }
+                          }}
+                          className={`text-[9px] px-1.5 py-0.2 rounded font-bold bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-700 flex items-center gap-0.5 shrink-0 ${
+                            userRole === 'admin' ? 'cursor-pointer hover:bg-rose-200' : ''
+                          }`}
+                          title={`Penyematan Medis: ${medicalGuardLabel} (Klik untuk ubah)`}
+                        >
+                          <span>🏥</span>
+                          <span>{medicalGuardLabel}</span>
+                        </span>
+                      ) : userRole === 'admin' ? (
+                        <button
+                          type="button"
+                          onClick={() => setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode })}
+                          className="text-[8.5px] px-1 py-0.2 rounded bg-white/80 dark:bg-slate-800 text-rose-600 dark:text-rose-400 border border-rose-300 dark:border-rose-700 border-dashed hover:bg-rose-50 cursor-pointer shrink-0 font-semibold"
+                          title="Sematkan Jaga Puskesmas / Jaga Rumah Sakit / Label Kustom"
+                        >
+                          + Puskesmas/RS
+                        </button>
+                      ) : null}
                     </div>
-                    <span className={`text-[9.5px] font-bold px-1 py-0.2 rounded shrink-0 ${badgeBg}`}>
+                    <span
+                      onClick={() => {
+                        if (userRole === 'admin') {
+                          setMorningPostModalTarget({ day: activeDay, staff: st, shiftCode });
+                        }
+                      }}
+                      className={`text-[9.5px] font-bold px-1 py-0.2 rounded shrink-0 ${badgeBg} ${userRole === 'admin' ? 'cursor-pointer hover:opacity-85' : ''}`}
+                      title={userRole === 'admin' ? 'Klik untuk sematkan Jaga Puskesmas / Rumah Sakit' : undefined}
+                    >
                       {shiftCode}
                     </span>
                   </div>

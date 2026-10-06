@@ -1,7 +1,9 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { MonthSchedule, Staff, ShiftSwapRecord, HandoverReport, DailyTask, ShiftCode } from '../types';
 import { SEPTEMBER_2026_STAFF_LIST } from '../data/septemberSchedule';
+import { OCTOBER_2026_STAFF_LIST } from '../data/octoberSchedule';
 import { SHIFT_TASKS_TEMPLATE, INITIAL_STAFF_LIST } from '../data/initialSchedule';
+import { INDONESIAN_MONTH_NAMES } from './scheduler';
 
 const SUPABASE_URL_KEY = 'sr_supabase_project_url';
 const SUPABASE_KEY_KEY = 'sr_supabase_anon_key';
@@ -302,7 +304,118 @@ CREATE TABLE IF NOT EXISTS public.daily_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_daily_tasks_date_staff ON public.daily_tasks(date_key, staff_id);
 
--- 8. KEBIJAKAN ROW LEVEL SECURITY (RLS)
+-- 8. TABEL ANNOUNCEMENTS (PENGUMUMAN BERJALAN & BANNER)
+CREATE TABLE IF NOT EXISTS public.announcements (
+    id VARCHAR(50) PRIMARY KEY DEFAULT 'current',
+    text TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    category VARCHAR(30) DEFAULT 'info',
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_by VARCHAR(100) DEFAULT 'Admin'
+);
+
+-- 9. TABEL MEDICAL_PLANS (REKAM MEDIS & PERAWATAN SANTRI SAKIT)
+CREATE TABLE IF NOT EXISTS public.medical_plans (
+    id VARCHAR(100) PRIMARY KEY,
+    student_id INTEGER NOT NULL DEFAULT 1,
+    student_name VARCHAR(150) NOT NULL,
+    grade VARCHAR(20) DEFAULT '-',
+    dorm_room VARCHAR(50) DEFAULT '-',
+    diagnosis TEXT NOT NULL,
+    symptoms TEXT DEFAULT '',
+    medicines JSONB DEFAULT '[]'::jsonb,
+    treatment_location VARCHAR(50) DEFAULT 'UKS',
+    diet_notes TEXT DEFAULT '',
+    is_fasting BOOLEAN DEFAULT FALSE,
+    special_care_notes TEXT DEFAULT '',
+    start_date DATE NOT NULL,
+    end_date DATE,
+    status VARCHAR(30) DEFAULT 'rencana',
+    reported_by VARCHAR(100) DEFAULT 'Wali Asuh',
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- 10. TABEL STUDENT_NOTES (CATATAN PERKEMBANGAN & PORTOFOLIO SISWA)
+CREATE TABLE IF NOT EXISTS public.student_notes (
+    id VARCHAR(100) PRIMARY KEY,
+    student_no INTEGER NOT NULL,
+    student_name VARCHAR(150) NOT NULL,
+    author_id INTEGER,
+    author_name VARCHAR(150) NOT NULL,
+    date_str VARCHAR(20) NOT NULL,
+    category VARCHAR(50) DEFAULT 'Karakter & Kedisiplinan',
+    content TEXT NOT NULL,
+    tags TEXT[] DEFAULT '{}',
+    is_private BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- 11. TABEL STUDENT_OVERRIDES (DATA KUSTOM PROFIL SISWA)
+CREATE TABLE IF NOT EXISTS public.student_overrides (
+    student_no INTEGER PRIMARY KEY,
+    data_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- 12. TABEL LEAVE_PERMISSIONS (SURAT IZIN & CUTI PETUGAS WALI ASUH)
+CREATE TABLE IF NOT EXISTS public.leave_permissions (
+    id VARCHAR(100) PRIMARY KEY,
+    year INTEGER NOT NULL,
+    month INTEGER NOT NULL,
+    day INTEGER NOT NULL,
+    staff_id INTEGER REFERENCES public.staff(id) ON DELETE SET NULL,
+    staff_name VARCHAR(150) NOT NULL,
+    leave_type VARCHAR(50) NOT NULL,
+    reason TEXT DEFAULT '',
+    proof_url TEXT,
+    proof_file_name VARCHAR(255),
+    status VARCHAR(30) DEFAULT 'approved',
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- 13. TABEL MORNING_POSTS, P5_ASSIGNMENTS, PUSH & SYSTEM_SETTINGS
+CREATE TABLE IF NOT EXISTS public.morning_post_options (
+    id VARCHAR(50) PRIMARY KEY DEFAULT 'current',
+    options_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.morning_posts (
+    schedule_id VARCHAR(50) PRIMARY KEY,
+    assignments_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.p5_task_options (
+    id VARCHAR(50) PRIMARY KEY DEFAULT 'current',
+    options_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.p5_assignments (
+    schedule_id VARCHAR(50) PRIMARY KEY,
+    assignments_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+    id VARCHAR(150) PRIMARY KEY,
+    staff_id INTEGER,
+    endpoint TEXT NOT NULL,
+    keys_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    device_info TEXT DEFAULT '',
+    last_active TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS public.system_settings (
+    key VARCHAR(100) PRIMARY KEY,
+    value_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- 14. KEBIJAKAN ROW LEVEL SECURITY (RLS)
 ALTER TABLE public.staff ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.schedules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.schedule_assignments ENABLE ROW LEVEL SECURITY;
@@ -310,6 +423,17 @@ ALTER TABLE public.shift_swaps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.handover_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sop_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.daily_tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.medical_plans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.student_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.student_overrides ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.leave_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.morning_post_options ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.morning_posts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.p5_task_options ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.p5_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.system_settings ENABLE ROW LEVEL SECURITY;
 
 DO $$ 
 BEGIN
@@ -333,15 +457,58 @@ BEGIN
 
     DROP POLICY IF EXISTS "Allow all for anon and auth on daily_tasks" ON public.daily_tasks;
     CREATE POLICY "Allow all for anon and auth on daily_tasks" ON public.daily_tasks FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on announcements" ON public.announcements;
+    CREATE POLICY "Allow all on announcements" ON public.announcements FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on medical_plans" ON public.medical_plans;
+    CREATE POLICY "Allow all on medical_plans" ON public.medical_plans FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on student_notes" ON public.student_notes;
+    CREATE POLICY "Allow all on student_notes" ON public.student_notes FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on student_overrides" ON public.student_overrides;
+    CREATE POLICY "Allow all on student_overrides" ON public.student_overrides FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on leave_permissions" ON public.leave_permissions;
+    CREATE POLICY "Allow all on leave_permissions" ON public.leave_permissions FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on morning_post_options" ON public.morning_post_options;
+    CREATE POLICY "Allow all on morning_post_options" ON public.morning_post_options FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on morning_posts" ON public.morning_posts;
+    CREATE POLICY "Allow all on morning_posts" ON public.morning_posts FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on p5_task_options" ON public.p5_task_options;
+    CREATE POLICY "Allow all on p5_task_options" ON public.p5_task_options FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on p5_assignments" ON public.p5_assignments;
+    CREATE POLICY "Allow all on p5_assignments" ON public.p5_assignments FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on push_subscriptions" ON public.push_subscriptions;
+    CREATE POLICY "Allow all on push_subscriptions" ON public.push_subscriptions FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS "Allow all on system_settings" ON public.system_settings;
+    CREATE POLICY "Allow all on system_settings" ON public.system_settings FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 END $$;
 
--- 9. PUBLIKASI REALTIME SUPABASE
+-- 15. PUBLIKASI REALTIME SUPABASE
 DO $$
 BEGIN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.schedules;
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.shift_swaps;
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.handover_reports;
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.daily_tasks;
+    ALTER PUBLICATION supabase_realtime ADD TABLE 
+        public.schedules,
+        public.staff,
+        public.shift_swaps,
+        public.handover_reports,
+        public.daily_tasks,
+        public.announcements,
+        public.medical_plans,
+        public.student_notes,
+        public.student_overrides,
+        public.leave_permissions,
+        public.morning_posts,
+        public.p5_assignments,
+        public.system_settings;
 EXCEPTION WHEN OTHERS THEN
     NULL;
 END $$;
@@ -521,18 +688,28 @@ export async function directMigrateToSupabase(
   try {
     const client = createClient(url, key);
 
-    // 1. Migrate Staff
-    onProgress?.('Mengunggah data 31 Personel Wali Asuh...', 15);
-    const staffRecords = staffList.map((s) => ({
+    // 1. Migrate Staff (Ensure all staff from active schedule + October/September baseline are included so FK constraints succeed)
+    onProgress?.(`Mengunggah data ${staffList.length} Personel Wali Asuh...`, 15);
+    const staffMap = new Map<number, Staff>();
+    SEPTEMBER_2026_STAFF_LIST.forEach((s) => staffMap.set(s.id, s));
+    OCTOBER_2026_STAFF_LIST.forEach((s) => staffMap.set(s.id, s));
+    staffList.forEach((s) => staffMap.set(s.id, s));
+    if (schedule.staffList) {
+      schedule.staffList.forEach((s) => staffMap.set(s.id, s));
+    }
+
+    const staffRecords = Array.from(staffMap.values()).map((s) => ({
       id: s.id,
       code: s.code || '',
       name: s.name,
-      gender: s.gender || 'L',
+      gender: s.gender === 'P' ? 'P' : 'L',
       jenjang: s.jenjang || '-',
       role: s.role || 'Wali Asuh',
       group_name: s.group || '',
       initials: s.initials || '',
       phone: s.phone || '',
+      nip: s.nip || '',
+      is_active: s.status !== 'archived',
     }));
 
     const { error: staffErr } = await client.from('staff').upsert(staffRecords, { onConflict: 'id' });
@@ -557,9 +734,16 @@ export async function directMigrateToSupabase(
       if (sopErr) {
         console.warn('SOP upload notice:', sopErr.message);
       }
+      try {
+        await client.from('system_settings').upsert({
+          key: 'checklist_sop',
+          value_json: { tasks: sopTasks, updatedAt: new Date().toISOString(), updatedBy: 'Admin Migration' },
+          updated_at: new Date().toISOString(),
+        });
+      } catch {}
     }
 
-    // 3. Migrate Master Schedules
+    // 3. Migrate Master Schedules & Per-Month Staff List
     onProgress?.('Mengunggah master jadwal bulanan...', 55);
     const scheduleId = `schedule_${schedule.year}_${String(schedule.month).padStart(2, '0')}`;
     const { error: schedErr } = await client.from('schedules').upsert(
@@ -578,8 +762,16 @@ export async function directMigrateToSupabase(
       throw new Error(`Gagal migrasi tabel schedules: ${schedErr.message}`);
     }
 
+    try {
+      await client.from('system_settings').upsert({
+        key: `schedule_staff_${schedule.year}_${schedule.month}`,
+        value_json: { staffList: schedule.staffList || staffList, updatedAt: new Date().toISOString() },
+        updated_at: new Date().toISOString(),
+      });
+    } catch {}
+
     // 4. Migrate Schedule Assignments (Relational)
-    onProgress?.('Mengunggah penugasan relasional 31 hari...', 75);
+    onProgress?.(`Mengunggah penugasan relasional ${schedule.totalDays} hari...`, 75);
     const assignmentRecords: any[] = [];
     for (let day = 1; day <= schedule.totalDays; day++) {
       const dayShifts = schedule.days[day];
@@ -587,7 +779,7 @@ export async function directMigrateToSupabase(
         for (const staffIdStr in dayShifts) {
           const staffId = Number(staffIdStr);
           const shiftCode = dayShifts[staffId];
-          if (shiftCode) {
+          if (shiftCode && staffMap.has(staffId)) {
             assignmentRecords.push({
               schedule_id: scheduleId,
               year: schedule.year,
@@ -624,12 +816,12 @@ export async function directMigrateToSupabase(
         month: sw.month,
         swap_type: sw.type,
         day1: sw.day1,
-        staff1_id: sw.staff1Id,
+        staff1_id: staffMap.has(sw.staff1Id) ? sw.staff1Id : null,
         staff1_name: sw.staff1Name,
         staff1_old_shift: sw.staff1OldShift,
         staff1_new_shift: sw.staff1NewShift,
         day2: sw.day2 || null,
-        staff2_id: sw.staff2Id || null,
+        staff2_id: sw.staff2Id && staffMap.has(sw.staff2Id) ? sw.staff2Id : null,
         staff2_name: sw.staff2Name || null,
         staff2_old_shift: sw.staff2OldShift || null,
         staff2_new_shift: sw.staff2NewShift || null,
@@ -711,6 +903,15 @@ export function isSupabaseConfigured(): boolean {
 }
 
 /**
+ * Resolve default baseline staff list for a given year and month
+ */
+function getBaselineStaffForMonth(year: number, month: number): Staff[] {
+  if (year === 2026 && month === 8) return INITIAL_STAFF_LIST;
+  if (year === 2026 && month === 9) return SEPTEMBER_2026_STAFF_LIST;
+  return OCTOBER_2026_STAFF_LIST;
+}
+
+/**
  * Fetch schedule from Supabase
  */
 export async function fetchScheduleFromSupabase(year: number, month: number): Promise<MonthSchedule | null> {
@@ -726,31 +927,67 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
 
     if (error || !schedData) return null;
 
-    // Also fetch staff if possible
-    const { data: staffData } = await client.from('staff').select('*').order('id', { ascending: true });
-    
     let staffList: Staff[] | undefined = undefined;
-    if (staffData && staffData.length > 0) {
-      staffList = staffData.map((s) => ({
-        id: s.id,
-        code: s.code,
-        name: s.name,
-        gender: s.gender,
-        jenjang: s.jenjang,
-        role: s.role,
-        group: s.group_name,
-        initials: s.initials,
-        phone: s.phone,
-      }));
+
+    // 1. Check month-specific staff roster in system_settings first
+    try {
+      const { data: monthStaffSetting } = await client
+        .from('system_settings')
+        .select('value_json')
+        .eq('key', `schedule_staff_${year}_${month}`)
+        .maybeSingle();
+      if (
+        monthStaffSetting?.value_json?.staffList &&
+        Array.isArray(monthStaffSetting.value_json.staffList) &&
+        monthStaffSetting.value_json.staffList.length > 0
+      ) {
+        staffList = monthStaffSetting.value_json.staffList;
+      }
+    } catch {}
+
+    // 2. Fallback to staff table if month-specific setting not found
+    if (!staffList) {
+      try {
+        const { data: staffData } = await client.from('staff').select('*').order('id', { ascending: true });
+        if (staffData && staffData.length > 0) {
+          staffList = staffData.map((s) => ({
+            id: s.id,
+            code: s.code,
+            name: s.name,
+            gender: s.gender,
+            jenjang: s.jenjang,
+            role: s.role,
+            group: s.group_name,
+            initials: s.initials,
+            phone: s.phone,
+            nip: s.nip,
+          }));
+        }
+      } catch {}
     }
+
+    // 3. Ensure October 2026 (or later) has full 55 baseline staff if database only had 31
+    const baseline = getBaselineStaffForMonth(schedData.year, schedData.month);
+    if (!staffList || staffList.length === 0) {
+      staffList = baseline;
+    } else if (schedData.year === 2026 && schedData.month === 10 && staffList.length < OCTOBER_2026_STAFF_LIST.length) {
+      const mergedMap = new Map<number, Staff>();
+      OCTOBER_2026_STAFF_LIST.forEach((s) => mergedMap.set(s.id, s));
+      staffList.forEach((s) => mergedMap.set(s.id, s));
+      staffList = Array.from(mergedMap.values());
+    }
+
+    const defaultTotalDays = new Date(schedData.year, schedData.month, 0).getDate() || 30;
 
     return {
       year: schedData.year,
       month: schedData.month,
-      monthName: schedData.month === 9 ? 'September' : 'Agustus',
-      totalDays: schedData.total_days || 30,
+      monthName: INDONESIAN_MONTH_NAMES[(schedData.month || 1) - 1] || 'Bulan',
+      totalDays: schedData.total_days || defaultTotalDays,
       days: schedData.days_json || {},
-      staffList: staffList || (schedData.month === 9 ? SEPTEMBER_2026_STAFF_LIST : INITIAL_STAFF_LIST),
+      staffList,
+      updatedAt: schedData.updated_at,
+      updatedBy: schedData.updated_by,
     };
   } catch (err) {
     console.warn('Failed to fetch schedule from Supabase:', err);
@@ -759,15 +996,64 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
 }
 
 /**
- * Save schedule to Supabase (both header days_json and relational schedule_assignments)
+ * Save schedule to Supabase (both header days_json, staff roster, and relational schedule_assignments)
  */
 export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy: string = 'User'): Promise<boolean> {
+  // Always persist to localStorage (v16, v15, v14) so local & multi-tab state is 100% consistent
+  const nowIso = schedule.updatedAt || new Date().toISOString();
+  const scheduleWithMeta: MonthSchedule = {
+    ...schedule,
+    updatedAt: nowIso,
+    updatedBy,
+  };
+  try {
+    const serialized = JSON.stringify(scheduleWithMeta);
+    localStorage.setItem(`wali_asuh_schedule_v16_${schedule.year}_${schedule.month}`, serialized);
+    localStorage.setItem(`wali_asuh_schedule_v15_${schedule.year}_${schedule.month}`, serialized);
+    localStorage.setItem(`wali_asuh_schedule_v14_${schedule.year}_${schedule.month}`, serialized);
+  } catch {}
+
   const client = getSupabaseClient();
   if (!client) return false;
   try {
     const scheduleId = `schedule_${schedule.year}_${String(schedule.month).padStart(2, '0')}`;
-    
-    // 1. Upsert master schedule
+
+    // 1. Upsert staff records first so foreign key constraints on schedule_assignments never fail
+    const activeRoster =
+      schedule.staffList && schedule.staffList.length > 0
+        ? schedule.staffList
+        : getBaselineStaffForMonth(schedule.year, schedule.month);
+
+    if (activeRoster.length > 0) {
+      const staffRecords = activeRoster.map((s) => ({
+        id: s.id,
+        code: s.code || '',
+        name: s.name,
+        gender: s.gender === 'P' ? 'P' : 'L',
+        jenjang: s.jenjang || '-',
+        role: s.role || 'Wali Asuh',
+        group_name: s.group || '',
+        initials: s.initials || '',
+        phone: s.phone || '',
+        nip: s.nip || '',
+        is_active: s.status !== 'archived',
+      }));
+      try {
+        await client.from('staff').upsert(staffRecords, { onConflict: 'id' });
+      } catch (staffErr) {
+        console.warn('Supabase staff pre-upsert notice:', staffErr);
+      }
+
+      try {
+        await client.from('system_settings').upsert({
+          key: `schedule_staff_${schedule.year}_${schedule.month}`,
+          value_json: { staffList: activeRoster, updatedAt: nowIso, updatedBy },
+          updated_at: nowIso,
+        });
+      } catch {}
+    }
+
+    // 2. Upsert master schedule
     const { error: schedErr } = await client.from('schedules').upsert(
       {
         id: scheduleId,
@@ -775,7 +1061,7 @@ export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy:
         month: schedule.month,
         total_days: schedule.totalDays,
         days_json: schedule.days,
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
         updated_by: updatedBy,
       },
       { onConflict: 'id' }
@@ -784,7 +1070,8 @@ export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy:
       console.warn('Supabase schedule upsert notice:', schedErr.message);
     }
 
-    // 2. Upsert relational assignments asynchronously
+    // 3. Upsert relational assignments
+    const validStaffIds = new Set(activeRoster.map((s) => s.id));
     const assignmentRecords: any[] = [];
     for (let day = 1; day <= schedule.totalDays; day++) {
       const dayShifts = schedule.days[day];
@@ -792,7 +1079,7 @@ export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy:
         for (const staffIdStr in dayShifts) {
           const staffId = Number(staffIdStr);
           const shiftCode = dayShifts[staffId];
-          if (shiftCode) {
+          if (shiftCode && (validStaffIds.size === 0 || validStaffIds.has(staffId))) {
             assignmentRecords.push({
               schedule_id: scheduleId,
               year: schedule.year,
@@ -807,16 +1094,19 @@ export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy:
     }
 
     if (assignmentRecords.length > 0) {
-      const chunkSize = 200;
+      const chunkSize = 250;
       for (let i = 0; i < assignmentRecords.length; i += chunkSize) {
         const chunk = assignmentRecords.slice(i, i + chunkSize);
-        await client
+        const { error: assignErr } = await client
           .from('schedule_assignments')
           .upsert(chunk, { onConflict: 'year,month,day,staff_id' });
+        if (assignErr) {
+          console.warn('Supabase assignment upsert notice:', assignErr.message);
+        }
       }
     }
 
-    return true;
+    return !schedErr;
   } catch (err) {
     console.warn('Failed to save schedule to Supabase:', err);
     return false;
@@ -824,31 +1114,72 @@ export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy:
 }
 
 /**
- * Subscribe to Supabase Schedule updates in Realtime with resilient polling fallback
+ * Subscribe to Supabase Schedule updates in Realtime with deduplicated resilient polling & cross-tab sync
  */
 export function subscribeToSupabaseSchedule(
   year: number,
   month: number,
-  onUpdate: (data: { days: Record<number, Record<number, ShiftCode>>; updatedAt?: string; updatedBy?: string }) => void
+  onUpdate: (data: {
+    days: Record<number, Record<number, ShiftCode>>;
+    staffList?: Staff[];
+    updatedAt?: string;
+    updatedBy?: string;
+  }) => void
 ): (() => void) | null {
+  let lastEmittedFingerprint = '';
+
+  const emitIfChanged = (payload: {
+    days: Record<number, Record<number, ShiftCode>>;
+    staffList?: Staff[];
+    updatedAt?: string;
+    updatedBy?: string;
+  }) => {
+    if (!payload.days || Object.keys(payload.days).length === 0) return;
+    const fingerprint = `${payload.updatedAt || ''}_${JSON.stringify(payload.days)}`;
+    if (fingerprint === lastEmittedFingerprint) return;
+    lastEmittedFingerprint = fingerprint;
+    onUpdate(payload);
+  };
+
+  // Cross-tab storage listener for instant local multi-tab sync
+  const storageKey = `wali_asuh_schedule_v16_${year}_${month}`;
+  const handleStorageEvent = (e: StorageEvent) => {
+    if (e.key === storageKey && e.newValue) {
+      try {
+        const parsed = JSON.parse(e.newValue);
+        if (parsed && parsed.days) {
+          emitIfChanged({
+            days: parsed.days,
+            staffList: parsed.staffList,
+            updatedAt: parsed.updatedAt,
+            updatedBy: parsed.updatedBy,
+          });
+        }
+      } catch {}
+    }
+  };
+  window.addEventListener('storage', handleStorageEvent);
+
   const client = getSupabaseClient();
-  if (!client) return null;
+  if (!client) {
+    return () => {
+      window.removeEventListener('storage', handleStorageEvent);
+    };
+  }
+
   try {
     const scheduleId = `schedule_${year}_${String(month).padStart(2, '0')}`;
 
     // 1. Immediate initial fetch from Supabase
     (async () => {
       try {
-        const { data, error } = await client
-          .from('schedules')
-          .select('days_json, updated_at, updated_by')
-          .eq('id', scheduleId)
-          .maybeSingle();
-        if (!error && data && data.days_json && Object.keys(data.days_json).length > 0) {
-          onUpdate({
-            days: data.days_json,
-            updatedAt: data.updated_at,
-            updatedBy: data.updated_by,
+        const fullSched = await fetchScheduleFromSupabase(year, month);
+        if (fullSched && fullSched.days && Object.keys(fullSched.days).length > 0) {
+          emitIfChanged({
+            days: fullSched.days,
+            staffList: fullSched.staffList,
+            updatedAt: fullSched.updatedAt,
+            updatedBy: fullSched.updatedBy,
           });
         }
       } catch {}
@@ -867,7 +1198,7 @@ export function subscribeToSupabaseSchedule(
         },
         (payload) => {
           if (payload.new && (payload.new as any).days_json) {
-            onUpdate({ 
+            emitIfChanged({
               days: (payload.new as any).days_json,
               updatedAt: (payload.new as any).updated_at,
               updatedBy: (payload.new as any).updated_by,
@@ -877,7 +1208,7 @@ export function subscribeToSupabaseSchedule(
       )
       .subscribe();
 
-    // 3. Resilient Polling Fallback (runs every 6 seconds to guarantee sync even without Realtime extension)
+    // 3. Deduplicated Resilient Polling Fallback (runs every 6 seconds to guarantee sync even without Realtime extension)
     const pollTimer = setInterval(async () => {
       try {
         const { data, error } = await client
@@ -886,7 +1217,7 @@ export function subscribeToSupabaseSchedule(
           .eq('id', scheduleId)
           .maybeSingle();
         if (!error && data && data.days_json && Object.keys(data.days_json).length > 0) {
-          onUpdate({
+          emitIfChanged({
             days: data.days_json,
             updatedAt: data.updated_at,
             updatedBy: data.updated_by,
@@ -896,12 +1227,15 @@ export function subscribeToSupabaseSchedule(
     }, 6000);
 
     return () => {
+      window.removeEventListener('storage', handleStorageEvent);
       clearInterval(pollTimer);
       client.removeChannel(channel);
     };
   } catch (err) {
     console.warn('Failed to subscribe to Supabase realtime schedule:', err);
-    return null;
+    return () => {
+      window.removeEventListener('storage', handleStorageEvent);
+    };
   }
 }
 

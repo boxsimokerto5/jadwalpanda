@@ -70,9 +70,14 @@ import {
   saveStudentMedicalPlanToSupabase,
   deleteStudentMedicalPlanFromSupabase,
   saveAllStudentMedicalPlansToSupabase,
-  getLocalStudentMedicalPlans
+  getLocalStudentMedicalPlans,
+  fetchHandoverReportsFromSupabase,
+  saveHandoverReportsToSupabase,
+  getLocalHandoverReports
 } from './utils/supabaseBackend';
 import { fetchMorningPostAssignmentsFromSupabase } from './utils/morningPostService';
+import { fetchP5TaskOptionsFromSupabase } from './utils/p5TaskService';
+import { SupabaseMigrationModal } from './components/SupabaseMigrationModal';
 
 function resolveScheduleDays(
   rawDays: Record<number, Record<number, ShiftCode>>,
@@ -433,7 +438,7 @@ export default function App() {
     await saveSopTasksToSupabase(SHIFT_TASKS_TEMPLATE, 'Admin Reset');
   }, []);
 
-  // Selected month state (defaults to September 2026 since user just added September)
+  // Selected month state (defaults to October 2026 or saved active month)
   const [selectedMonth, setSelectedMonth] = useState<{ year: number; month: number; monthName: string }>(() => {
     try {
       const saved = localStorage.getItem('active_schedule_month');
@@ -442,12 +447,13 @@ export default function App() {
         if (parsed.year && parsed.month) return parsed;
       }
     } catch {}
-    return { year: 2026, month: 9, monthName: 'September' };
+    return { year: 2026, month: 10, monthName: 'Oktober' };
   });
 
   // Cloud database status
   const [cloudStatus, setCloudStatus] = useState<'connected' | 'syncing' | 'offline' | 'error'>('syncing');
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState<boolean>(false);
   const [refreshToast, setRefreshToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
   const isCloudSyncedRef = React.useRef<boolean>(false);
   const isIncomingRemoteUpdateRef = React.useRef<boolean>(false);
@@ -463,31 +469,38 @@ export default function App() {
     return getInitialScheduleForMonth(selectedMonth.year, selectedMonth.month);
   });
 
-  // Master staff directory state
+  // Master staff directory state (combines September 31 + October 55 + local custom additions)
   const [masterStaffList, setMasterStaffList] = useState<Staff[]>(() => {
     const local = getLocalStaffList();
     const map = new Map<number, Staff>();
     SEPTEMBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
+    OCTOBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
     local.forEach((s) => map.set(s.id, s));
-    return Array.from(map.values());
+    return Array.from(map.values()).sort((a, b) => a.id - b.id);
   });
 
   // Real-time listener for master staff directory changes in Supabase
   useEffect(() => {
     const unsubStaff = subscribeToStaffList((remoteList) => {
       if (Array.isArray(remoteList) && remoteList.length > 0) {
-        setMasterStaffList(remoteList);
+        const map = new Map<number, Staff>();
+        SEPTEMBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
+        OCTOBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
+        remoteList.forEach((s) => map.set(s.id, s));
+        setMasterStaffList(Array.from(map.values()).sort((a, b) => a.id - b.id));
       }
     });
     return () => unsubStaff();
   }, []);
 
-  // Active month's staff roster derived from schedule.staffList, falling back to September baseline or master
+  // Active month's staff roster derived from schedule.staffList, falling back to month baseline or master
   const staffList = React.useMemo(() => {
     if (schedule.staffList && schedule.staffList.length > 0) {
       return schedule.staffList;
     }
-    return schedule.month === 9 ? SEPTEMBER_2026_STAFF_LIST : masterStaffList;
+    if (schedule.month === 9) return SEPTEMBER_2026_STAFF_LIST;
+    if (schedule.month === 10) return OCTOBER_2026_STAFF_LIST;
+    return masterStaffList;
   }, [schedule.staffList, schedule.month, masterStaffList]);
 
   // Selected staff profile
@@ -504,7 +517,7 @@ export default function App() {
   const [activeDay, setActiveDay] = useState<number>(() => {
     const now = new Date();
     const day = now.getDate();
-    return day >= 1 && day <= 30 ? day : 1;
+    return day >= 1 && day <= 31 ? day : 1;
   });
 
   // Auto-sync Supabase configuration across all devices
@@ -662,7 +675,12 @@ export default function App() {
 
     const newSchedule = getInitialScheduleForMonth(year, month);
     if (!newSchedule.staffList || newSchedule.staffList.length === 0) {
-      newSchedule.staffList = month === 9 ? SEPTEMBER_2026_STAFF_LIST : masterStaffList;
+      newSchedule.staffList =
+        month === 9
+          ? SEPTEMBER_2026_STAFF_LIST
+          : month === 10
+          ? OCTOBER_2026_STAFF_LIST
+          : masterStaffList;
     }
     setSchedule(newSchedule);
 
@@ -679,25 +697,82 @@ export default function App() {
     soundManager.playChime();
   }, [masterStaffList]);
 
+  // Handlers to restore official September / October PDF baseline schedule (Admin Only)
+  const handleRestoreSeptemberPdf = useCallback(async () => {
+    if (currentUserRoleRef.current !== 'admin') return;
+    const septBaseline: MonthSchedule = {
+      year: 2026,
+      month: 9,
+      monthName: 'September',
+      totalDays: 30,
+      staffList: SEPTEMBER_2026_STAFF_LIST,
+      days: getInitialSeptember2026Days(),
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'Restore PDF Resmi September 2026',
+    };
+    setSelectedMonth({ year: 2026, month: 9, monthName: 'September' });
+    localStorage.setItem('active_schedule_month', JSON.stringify({ year: 2026, month: 9, monthName: 'September' }));
+    setSchedule(septBaseline);
+    try {
+      localStorage.setItem('wali_asuh_schedule_v16_2026_9', JSON.stringify(septBaseline));
+      localStorage.setItem('wali_asuh_schedule_v15_2026_9', JSON.stringify(septBaseline));
+    } catch {}
+    await saveScheduleToSupabase(septBaseline, 'Restore PDF Resmi September 2026');
+    soundManager.playChime();
+    setRefreshToast({ message: 'Jadwal September 2026 berhasil dikembalikan ke PDF Resmi & disinkronkan!', type: 'success' });
+    setTimeout(() => setRefreshToast(null), 4000);
+  }, []);
+
+  const handleRestoreOctoberPdf = useCallback(async () => {
+    if (currentUserRoleRef.current !== 'admin') return;
+    const octBaseline: MonthSchedule = {
+      year: 2026,
+      month: 10,
+      monthName: 'Oktober',
+      totalDays: 31,
+      staffList: OCTOBER_2026_STAFF_LIST,
+      days: getInitialOctober2026Days(),
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'Restore PDF Resmi Oktober 2026',
+    };
+    setSelectedMonth({ year: 2026, month: 10, monthName: 'Oktober' });
+    localStorage.setItem('active_schedule_month', JSON.stringify({ year: 2026, month: 10, monthName: 'Oktober' }));
+    setSchedule(octBaseline);
+    try {
+      localStorage.setItem('wali_asuh_schedule_v16_2026_10', JSON.stringify(octBaseline));
+      localStorage.setItem('wali_asuh_schedule_v15_2026_10', JSON.stringify(octBaseline));
+    } catch {}
+    await saveScheduleToSupabase(octBaseline, 'Restore PDF Resmi Oktober 2026');
+    soundManager.playChime();
+    setRefreshToast({ message: 'Jadwal Oktober 2026 (55 Personel) berhasil dikembalikan ke PDF Resmi & disinkronkan!', type: 'success' });
+    setTimeout(() => setRefreshToast(null), 4000);
+  }, []);
+
   // Handler to import schedule from CSV and sync to state + localStorage + Supabase
   const handleImportSchedule = useCallback((newSched: MonthSchedule) => {
-    if (newSched.year !== selectedMonth.year || newSched.month !== selectedMonth.month) {
-      const monthName = INDONESIAN_MONTH_NAMES[newSched.month - 1] || 'Bulan';
-      const newMonthObj = { year: newSched.year, month: newSched.month, monthName };
+    const stampedSched: MonthSchedule = {
+      ...newSched,
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'Admin CSV Import',
+    };
+    if (stampedSched.year !== selectedMonth.year || stampedSched.month !== selectedMonth.month) {
+      const monthName = INDONESIAN_MONTH_NAMES[stampedSched.month - 1] || 'Bulan';
+      const newMonthObj = { year: stampedSched.year, month: stampedSched.month, monthName };
       setSelectedMonth(newMonthObj);
       localStorage.setItem('active_schedule_month', JSON.stringify(newMonthObj));
     }
-    setSchedule(newSched);
+    setSchedule(stampedSched);
     try {
-      localStorage.setItem(`wali_asuh_schedule_v15_${newSched.year}_${newSched.month}`, JSON.stringify(newSched));
-      localStorage.setItem(`wali_asuh_schedule_v14_${newSched.year}_${newSched.month}`, JSON.stringify(newSched));
-      localStorage.setItem(`wali_asuh_schedule_v13_${newSched.year}_${newSched.month}`, JSON.stringify(newSched));
+      localStorage.setItem(`wali_asuh_schedule_v16_${stampedSched.year}_${stampedSched.month}`, JSON.stringify(stampedSched));
+      localStorage.setItem(`wali_asuh_schedule_v15_${stampedSched.year}_${stampedSched.month}`, JSON.stringify(stampedSched));
+      localStorage.setItem(`wali_asuh_schedule_v14_${stampedSched.year}_${stampedSched.month}`, JSON.stringify(stampedSched));
+      localStorage.setItem(`wali_asuh_schedule_v13_${stampedSched.year}_${stampedSched.month}`, JSON.stringify(stampedSched));
     } catch (e) {
       console.warn('Failed to save imported schedule:', e);
     }
-    saveScheduleToSupabase(newSched, 'Admin CSV Import').catch(console.error);
+    saveScheduleToSupabase(stampedSched, 'Admin CSV Import').catch(console.error);
     setRefreshToast({
-      message: `Jadwal ${newSched.monthName} ${newSched.year} berhasil diimpor dan disimpan ke database!`,
+      message: `Jadwal ${stampedSched.monthName} ${stampedSched.year} berhasil diimpor dan disimpan ke database!`,
       type: 'success',
     });
     setTimeout(() => setRefreshToast(null), 4500);
@@ -706,6 +781,7 @@ export default function App() {
   // Save schedule to localStorage and Supabase on change
   useEffect(() => {
     try {
+      localStorage.setItem(`wali_asuh_schedule_v16_${schedule.year}_${schedule.month}`, JSON.stringify(schedule));
       localStorage.setItem(`wali_asuh_schedule_v15_${schedule.year}_${schedule.month}`, JSON.stringify(schedule));
       localStorage.setItem(`wali_asuh_schedule_v14_${schedule.year}_${schedule.month}`, JSON.stringify(schedule));
       localStorage.setItem(`wali_asuh_schedule_v13_${schedule.year}_${schedule.month}`, JSON.stringify(schedule));
@@ -759,6 +835,7 @@ export default function App() {
   useEffect(() => {
     const handleBeforeUnload = () => {
       try {
+        localStorage.setItem(`wali_asuh_schedule_v16_${schedule.year}_${schedule.month}`, JSON.stringify(schedule));
         localStorage.setItem(`wali_asuh_schedule_v15_${schedule.year}_${schedule.month}`, JSON.stringify(schedule));
       } catch {}
     };
@@ -766,17 +843,24 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [schedule]);
 
-  // Manual Force Sync handler (Push to server - Always Online)
+  // Manual Force Sync handler (Push to server & open Supabase Cloud Sync Center if Admin)
   const handleForceSyncToCloud = useCallback(async () => {
+    if (currentUserRoleRef.current === 'admin') {
+      setIsSupabaseModalOpen(true);
+    }
     try {
       setCloudStatus('syncing');
       const ok = await saveScheduleToSupabase(schedule, 'Sinkronisasi Manual');
+      await saveStaffListToSupabase(masterStaffList).catch(() => {});
+      await saveSopTasksToSupabase(sopTasks, 'Sinkronisasi Manual').catch(() => {});
+      await saveAllStudentMedicalPlansToSupabase(medicalPlans).catch(() => {});
+      await saveHandoverReportsToSupabase(getLocalHandoverReports()).catch(() => {});
       setCloudStatus('connected');
       if (ok) {
         soundManager.playChime();
-        setRefreshToast({ message: 'Data jadwal berhasil disinkronkan ke Supabase Cloud!', type: 'success' });
+        setRefreshToast({ message: 'Seluruh data jadwal, personel, SOP, medis & serah terima berhasil disinkronkan ke Supabase Cloud!', type: 'success' });
       } else {
-        setRefreshToast({ message: 'Jadwal tersimpan di sistem.', type: 'info' });
+        setRefreshToast({ message: 'Jadwal tersimpan di sistem lokal & cloud.', type: 'info' });
       }
     } catch {
       setCloudStatus('connected');
@@ -784,45 +868,57 @@ export default function App() {
     } finally {
       setTimeout(() => setRefreshToast(null), 3500);
     }
-  }, [schedule]);
+  }, [schedule, masterStaffList, sopTasks, medicalPlans]);
 
   // Direct Fetch handler (Pull latest data from server - Always Online)
   const handleRefreshDataFromServer = useCallback(async () => {
     setIsRefreshing(true);
     setCloudStatus('syncing');
     try {
-      const supabaseData = await fetchScheduleFromSupabase(selectedMonth.year, selectedMonth.month);
-      await fetchMorningPostAssignmentsFromSupabase(selectedMonth.year, selectedMonth.month);
+      const [supabaseData] = await Promise.all([
+        fetchScheduleFromSupabase(selectedMonth.year, selectedMonth.month),
+        fetchMorningPostAssignmentsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => null),
+        fetchP5TaskOptionsFromSupabase().catch(() => null),
+        fetchHandoverReportsFromSupabase().catch(() => null),
+      ]);
 
       if (supabaseData && supabaseData.days && Object.keys(supabaseData.days).length > 0) {
         isIncomingRemoteUpdateRef.current = true;
+        let currentStaff = (supabaseData.staffList && supabaseData.staffList.length > 0) ? supabaseData.staffList : schedule.staffList;
+        if (supabaseData.month === 10 && currentStaff.length < OCTOBER_2026_STAFF_LIST.length) {
+          currentStaff = OCTOBER_2026_STAFF_LIST;
+        }
         const resolvedDays = resolveScheduleDays(
           supabaseData.days,
           supabaseData.year,
           supabaseData.month,
-          schedule.staffList
+          currentStaff
         );
-        setSchedule((prev) => ({
-          ...prev,
+        const updatedSched: MonthSchedule = {
+          ...schedule,
           year: supabaseData.year,
           month: supabaseData.month,
-          totalDays: supabaseData.totalDays || prev.totalDays,
+          monthName: supabaseData.monthName || schedule.monthName,
+          totalDays: supabaseData.totalDays || schedule.totalDays,
+          staffList: currentStaff,
           days: resolvedDays,
-        }));
+          updatedAt: supabaseData.updatedAt || new Date().toISOString(),
+          updatedBy: supabaseData.updatedBy || 'Supabase Server',
+        };
+        setSchedule(updatedSched);
         try {
           localStorage.setItem(
             `wali_asuh_schedule_v16_${supabaseData.year}_${supabaseData.month}`,
-            JSON.stringify({
-              ...schedule,
-              year: supabaseData.year,
-              month: supabaseData.month,
-              days: resolvedDays,
-            })
+            JSON.stringify(updatedSched)
+          );
+          localStorage.setItem(
+            `wali_asuh_schedule_v15_${supabaseData.year}_${supabaseData.month}`,
+            JSON.stringify(updatedSched)
           );
         } catch {}
         setCloudStatus('connected');
         soundManager.playChime();
-        setRefreshToast({ message: 'Data terbaru berhasil diambil dari Supabase!', type: 'success' });
+        setRefreshToast({ message: 'Data terbaru berhasil disinkronkan dari Supabase Cloud!', type: 'success' });
       } else {
         await saveScheduleToSupabase(schedule, 'Inisialisasi Sinkronisasi');
         setCloudStatus('connected');
@@ -1008,6 +1104,8 @@ export default function App() {
             onShowSplash={() => setShowSplash(true)}
             isRefreshing={isRefreshing}
             onRefreshServer={handleRefreshDataFromServer}
+            onRestoreSeptemberPdf={currentUserRole === 'admin' ? handleRestoreSeptemberPdf : undefined}
+            onRestoreOctoberPdf={currentUserRole === 'admin' ? handleRestoreOctoberPdf : undefined}
             medicalNotificationCount={(() => {
               const padTwo = (n: number) => String(n).padStart(2, '0');
               const activeTodayKey = `${schedule.year}-${padTwo(schedule.month)}-${padTwo(activeDay)}`;
@@ -1282,6 +1380,23 @@ export default function App() {
             selectedStaffId={selectedStaffId}
             onNavigateToTab={(tab) => setCurrentTab(tab as any)}
           />
+
+          {/* Modal Sinkronisasi & Migrasi Database Supabase Cloud */}
+          {isSupabaseModalOpen && (
+            <SupabaseMigrationModal
+              schedule={schedule}
+              staffList={masterStaffList}
+              onClose={() => setIsSupabaseModalOpen(false)}
+              onSuccessSync={(syncedSchedule) => {
+                if (syncedSchedule && syncedSchedule.days && Object.keys(syncedSchedule.days).length > 0) {
+                  setSchedule(syncedSchedule);
+                }
+                setCloudStatus('connected');
+                setRefreshToast({ message: 'Sinkronisasi penuh dengan Supabase Cloud selesai!', type: 'success' });
+                setTimeout(() => setRefreshToast(null), 3500);
+              }}
+            />
+          )}
         </div>
       )}
     </>

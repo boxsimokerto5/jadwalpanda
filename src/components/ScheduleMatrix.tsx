@@ -84,7 +84,7 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
     getLocalP5Assignments(schedule.year, schedule.month)
   );
 
-  const [morningPostModalTarget, setMorningPostModalTarget] = useState<{ day: number; staff: Staff; shiftCode: 'P1' | 'P2' | 'P3' } | null>(null);
+  const [morningPostModalTarget, setMorningPostModalTarget] = useState<{ day: number; staff: Staff; shiftCode: ShiftCode | string } | null>(null);
   const [morningPostAssignments, setMorningPostAssignments] = useState<Record<string, MorningPostAssignment>>(() =>
     getLocalMorningPostAssignments(schedule.year, schedule.month)
   );
@@ -895,7 +895,9 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
                       const isP3 = shift === 'P3';
                       const isIzin = shift === 'IZIN';
                       const p5Task = isP5 ? p5Assignments[`${day}_${staff.id}`]?.taskTitle : null;
-                      const morningPost = (isP1 || isP2 || isP3) ? morningPostAssignments[`${day}_${staff.id}`]?.postTitle : null;
+                      const cellAssign = morningPostAssignments[`${day}_${staff.id}`];
+                      const morningPost = (isP1 || isP2 || isP3) ? cellAssign?.postTitle : null;
+                      const medicalGuard = cellAssign?.medicalGuardLabel;
                       const leaveRecord = isIzin ? leaveRecords[`${schedule.year}_${schedule.month}_${day}_${staff.id}`] : null;
 
                       return (
@@ -915,7 +917,7 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
                           className={`p-0.2 border-r border-slate-200 dark:border-slate-700/80 cursor-pointer select-none transition-all ${
                             isFocusedDay ? 'bg-blue-50 dark:bg-blue-900/20 font-bold' : ''
                           } ${isM3 ? 'bg-fuchsia-100/60 dark:bg-fuchsia-950/40' : ''} ${isP5 ? 'bg-emerald-50/50 dark:bg-emerald-950/30' : ''} ${isIzin ? 'bg-rose-50/70 dark:bg-rose-950/40' : ''}`}
-                          title={`Tgl ${day} - ${staff.name}: ${meta?.name || shift} ${p5Task ? `[Tugas: ${p5Task}]` : ''} ${morningPost ? `[Pos: ${morningPost}]` : ''} ${leaveRecord ? `[Izin: ${leaveRecord.leaveType}${leaveRecord.notes ? ` - ${leaveRecord.notes}` : ''}]` : ''}`}
+                          title={`Tgl ${day} - ${staff.name}: ${meta?.name || shift} ${p5Task ? `[Tugas: ${p5Task}]` : ''} ${morningPost ? `[Pos: ${morningPost}]` : ''} ${medicalGuard ? `[🏥 ${medicalGuard}]` : ''} ${leaveRecord ? `[Izin: ${leaveRecord.leaveType}${leaveRecord.notes ? ` - ${leaveRecord.notes}` : ''}]` : ''}`}
                         >
                           <div className="flex flex-col items-center justify-center">
                             <span
@@ -945,6 +947,14 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
                                 title={`Pos: ${morningPost}`}
                               >
                                 {morningPost.replace('UKS ', '')}
+                              </span>
+                            )}
+                            {medicalGuard && (
+                              <span
+                                className="text-[7px] leading-none px-0.5 py-0.2 rounded font-black truncate max-w-[36px] mt-0.5 bg-rose-600 text-white"
+                                title={`Penyematan: ${medicalGuard}`}
+                              >
+                                🏥{medicalGuard.replace(/^Jaga\s+/i, '')}
                               </span>
                             )}
                           </div>
@@ -1347,6 +1357,23 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
                   <strong>Aturan Khusus M3:</strong> Penugasan ke kode M3 secara otomatis memicu pengingat tugas keliling asrama di jam 23:00 WIB & kirim foto ke grup dinas.
                 </span>
               </div>
+
+              {editingStaff && ['P', 'P1', 'P2', 'P3', 'P4', 'P5', 'S', 'S2A', 'S3A', 'S4A', 'M', 'M1', 'M2', 'M3'].includes(currentShiftOfEditing) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const targetDay = editingCell.day;
+                    const st = editingStaff;
+                    const sh = currentShiftOfEditing;
+                    setEditingCell(null);
+                    setMorningPostModalTarget({ day: targetDay, staff: st, shiftCode: sh });
+                  }}
+                  className="w-full py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/50 dark:hover:bg-rose-900/60 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <span>🏥</span>
+                  <span>Sematkan Tugas Jaga Puskesmas / Rumah Sakit (Custom)</span>
+                </button>
+              )}
             </div>
 
             <div className="flex justify-end pt-2">

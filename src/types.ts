@@ -274,6 +274,7 @@ export interface MorningPostAssignment {
   shiftCode: ShiftCode | string;
   postTitle?: string; // e.g. "UKS SD", "UKS SMP", "UKS SMA", "Mobile / Keliling"
   quranAssistance?: QuranAssistanceLevel; // "Mengaji SD" | "Mengaji SMP" | "Mengaji SMA"
+  medicalGuardLabel?: string; // e.g. "Jaga Puskesmas", "Jaga Rumah Sakit", or custom label across Pagi, Sore, Malam
   customDetail?: string;
   optionId?: string;
   assignedBy?: string;
@@ -284,6 +285,13 @@ export interface MorningPostAssignment {
 export interface MorningPostCustomOption {
   id: string;
   label: string; // e.g. "UKS SD", "UKS SMP", "UKS SMA", "Mobile / Keliling"
+  isDefault?: boolean;
+}
+
+export interface MedicalGuardCustomOption {
+  id: string;
+  label: string; // e.g. "Jaga Puskesmas", "Jaga Rumah Sakit", or custom label
+  desc?: string;
   isDefault?: boolean;
 }
 

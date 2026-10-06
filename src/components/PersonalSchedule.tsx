@@ -102,8 +102,17 @@ export const PersonalSchedule: React.FC<PersonalScheduleProps> = ({
       const dObj = new Date(schedule.year, schedule.month - 1, d);
       const dayName = INDONESIAN_DAY_NAMES[dObj.getDay()];
       const p5Task = shift === 'P5' ? p5Assignments[`${d}_${selectedStaff.id}`]?.taskTitle : null;
-      const morningPost = (shift === 'P1' || shift === 'P2' || shift === 'P3') ? morningPostAssignments[`${d}_${selectedStaff.id}`]?.postTitle : null;
-      const extraNote = p5Task ? ` [Tugas: ${p5Task}]` : morningPost ? ` [Pos: ${morningPost}]` : '';
+      const morningAssign = morningPostAssignments[`${d}_${selectedStaff.id}`];
+      const morningPost = (shift === 'P1' || shift === 'P2' || shift === 'P3') ? morningAssign?.postTitle : null;
+      const medGuard = morningAssign?.medicalGuardLabel;
+      const quran = morningAssign?.quranAssistance;
+      const extraParts = [
+        p5Task ? `Tugas: ${p5Task}` : null,
+        morningPost ? `Pos: ${morningPost}` : null,
+        medGuard ? `🏥 ${medGuard}` : null,
+        quran ? `📖 ${quran}` : null,
+      ].filter(Boolean);
+      const extraNote = extraParts.length > 0 ? ` [${extraParts.join(' | ')}]` : '';
       text += `• Tgl ${d} (${dayName}): *${shift}*${extraNote} - ${meta.name} (${meta.startTime} - ${meta.endTime})\n`;
     }
 
@@ -340,6 +349,7 @@ export const PersonalSchedule: React.FC<PersonalScheduleProps> = ({
               const morningAssignment = morningPostAssignments[`${day}_${selectedStaff.id}`];
               const morningPost = (shift === 'P1' || shift === 'P2' || shift === 'P3') ? morningAssignment?.postTitle : null;
               const quranAssistance = morningAssignment?.quranAssistance;
+              const medicalGuardLabel = morningAssignment?.medicalGuardLabel;
 
               return (
                 <div
@@ -379,6 +389,11 @@ export const PersonalSchedule: React.FC<PersonalScheduleProps> = ({
                         📖 {quranAssistance}
                       </div>
                     )}
+                    {medicalGuardLabel && (
+                      <div className="text-[7.5px] font-bold text-rose-700 dark:text-rose-300 truncate mt-0.5" title={`Penyematan: ${medicalGuardLabel}`}>
+                        🏥 {medicalGuardLabel}
+                      </div>
+                    )}
                   </div>
 
                   <div className="text-[9px] text-slate-500 dark:text-slate-400 truncate">
@@ -408,6 +423,7 @@ export const PersonalSchedule: React.FC<PersonalScheduleProps> = ({
               const itemAssignment = morningPostAssignments[`${item.day}_${selectedStaff.id}`];
               const morningPost = (item.shift === 'P1' || item.shift === 'P2' || item.shift === 'P3') ? itemAssignment?.postTitle : null;
               const itemQuran = itemAssignment?.quranAssistance;
+              const itemMedGuard = itemAssignment?.medicalGuardLabel;
               return (
                 <div
                   key={idx}
@@ -430,6 +446,11 @@ export const PersonalSchedule: React.FC<PersonalScheduleProps> = ({
                             📖 {itemQuran}
                           </span>
                         )}
+                        {itemMedGuard && (
+                          <span className="text-[9px] px-1 py-0.2 rounded font-semibold bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-800">
+                            🏥 {itemMedGuard}
+                          </span>
+                        )}
                       </div>
                       <div className="text-[10px] text-slate-500 truncate max-w-[140px]">
                         {item.meta.name} • {item.meta.startTime}
@@ -442,7 +463,7 @@ export const PersonalSchedule: React.FC<PersonalScheduleProps> = ({
                       notificationService.triggerNotification(
                         `Pengingat Shif ${item.meta.name}`,
                         {
-                          body: `Jadwal ${item.dayName}, ${item.day} ${schedule.monthName}: ${item.meta.name} (${item.meta.startTime} - ${item.meta.endTime})${p5Task ? ` [Tugas: ${p5Task}]` : ''}${morningPost ? ` [Pos: ${morningPost}]` : ''}${itemQuran ? ` [Mengaji: ${itemQuran}]` : ''}`,
+                          body: `Jadwal ${item.dayName}, ${item.day} ${schedule.monthName}: ${item.meta.name} (${item.meta.startTime} - ${item.meta.endTime})${p5Task ? ` [Tugas: ${p5Task}]` : ''}${morningPost ? ` [Pos: ${morningPost}]` : ''}${itemMedGuard ? ` [🏥 ${itemMedGuard}]` : ''}${itemQuran ? ` [Mengaji: ${itemQuran}]` : ''}`,
                           sound: 'chime',
                         }
                       );

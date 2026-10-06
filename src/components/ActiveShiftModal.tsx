@@ -212,11 +212,16 @@ export const ActiveShiftModal: React.FC<ActiveShiftModalProps> = ({
 
       if (isIncluded) {
         const p5Custom = shiftCode === 'P5' ? p5Assignments[`${todayDay}_${staff.id}`]?.taskTitle : undefined;
+        const staffAssign = morningPostAssignments[`${todayDay}_${staff.id}`];
         const morningPost = (shiftCode === 'P1' || shiftCode === 'P2' || shiftCode === 'P3' || shiftCode === 'P') 
-          ? morningPostAssignments[`${todayDay}_${staff.id}`]?.postTitle 
+          ? staffAssign?.postTitle 
           : undefined;
-        const quran = morningPostAssignments[`${todayDay}_${staff.id}`]?.quranAssistance;
+        const quran = staffAssign?.quranAssistance;
+        const medicalGuard = staffAssign?.medicalGuardLabel;
         let { shortDesc, badgeBg } = getShortShiftDescription(shiftCode, p5Custom, morningPost);
+        if (medicalGuard) {
+          shortDesc = `${shortDesc} • 🏥 ${medicalGuard}`;
+        }
         if (quran) {
           shortDesc = `${shortDesc} • 📖 ${quran}`;
         }
