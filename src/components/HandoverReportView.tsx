@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { MonthSchedule, Staff, ShiftCode, HandoverReport, SickStudent, Student, HandoverShiftMode, MorningPostAssignment } from '../types';
 import { SHIFT_DEFINITIONS } from '../data/initialSchedule';
+import { INDONESIAN_MONTH_NAMES } from '../utils/scheduler';
 import { ALL_STUDENTS_DATA, TOTAL_STUDENTS_COUNT } from '../data/studentsData';
 import { StudentPickerModal } from './StudentPickerModal';
 import { soundManager } from '../utils/audio';
@@ -568,6 +569,9 @@ export const HandoverReportView: React.FC<HandoverReportViewProps> = ({
     return result;
   }, [morningPostAssignments, schedule.days, staffList, activeDay, targetOutgoingDay]);
 
+  const resolvedMonthName =
+    INDONESIAN_MONTH_NAMES[(schedule.month || 10) - 1] || schedule.monthName || 'Oktober';
+
   // Generate WhatsApp text report
   const generateWhatsAppReportText = () => {
     const dayName = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'][
@@ -608,7 +612,7 @@ export const HandoverReportView: React.FC<HandoverReportViewProps> = ({
 *SEKOLAH RAKYAT TERINTEGRASI 1 KEDIRI*
 *Pelayanan Wali Asuh*
 ━━━━━━━━━━━━━━━━━━━━
-📅 *Hari/Tanggal:* ${dayName}, ${activeDay} ${schedule.monthName} ${schedule.year}
+📅 *Hari/Tanggal:* ${dayName}, ${activeDay} ${resolvedMonthName} ${schedule.year}
 ⏰ *Waktu Serah Terima:* ${handoverTime} WIB
 🔄 *Pergantian:* *${handoverTitle}*
     • Menyerahkan: ${outgoingShiftLabel}
@@ -846,7 +850,7 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
             >
               {Array.from({ length: schedule.totalDays }, (_, i) => i + 1).map((d) => (
                 <option key={d} value={d}>
-                  Tgl {d} {schedule.monthName} {schedule.year}
+                  Tgl {d} {resolvedMonthName} {schedule.year}
                 </option>
               ))}
             </select>
@@ -1714,7 +1718,7 @@ _Laporan Serah Terima disusun oleh Wali Asuh SRT 1 Kediri_`;
             <tr>
               <td className="w-36 font-bold py-1">Hari, Tanggal</td>
               <td className="w-4">:</td>
-              <td>{activeDay} {schedule.monthName} {schedule.year}</td>
+              <td>{activeDay} {resolvedMonthName} {schedule.year}</td>
               <td className="w-36 font-bold py-1">Waktu Serah Terima</td>
               <td className="w-4">:</td>
               <td>{handoverTime} WIB</td>

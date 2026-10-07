@@ -122,6 +122,8 @@ function resolveScheduleDays(
 }
 
 function getInitialScheduleForMonth(year: number, month: number): MonthSchedule {
+  const canonicalMonthName = INDONESIAN_MONTH_NAMES[month - 1] || 'Oktober';
+  const canonicalTotalDays = new Date(year, month, 0).getDate() || 31;
   try {
     const saved = localStorage.getItem(`wali_asuh_schedule_v16_${year}_${month}`) ||
                   localStorage.getItem(`wali_asuh_schedule_v15_${year}_${month}`);
@@ -132,6 +134,10 @@ function getInitialScheduleForMonth(year: number, month: number): MonthSchedule 
         if (year === 2026 && month === 10 && parsed.staffList.length < OCTOBER_2026_STAFF_LIST.length) {
           // Stale cache detected, continue to official baseline below
         } else {
+          parsed.year = year;
+          parsed.month = month;
+          parsed.monthName = canonicalMonthName;
+          parsed.totalDays = canonicalTotalDays;
           parsed.days = resolveScheduleDays(parsed.days, year, month, parsed.staffList);
           return parsed;
         }
@@ -444,7 +450,15 @@ export default function App() {
       const saved = localStorage.getItem('active_schedule_month');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.year && parsed.month) return parsed;
+        if (parsed.year && parsed.month) {
+          const m = Number(parsed.month);
+          const y = Number(parsed.year);
+          return {
+            year: y,
+            month: m,
+            monthName: INDONESIAN_MONTH_NAMES[m - 1] || parsed.monthName || 'Oktober',
+          };
+        }
       }
     } catch {}
     return { year: 2026, month: 10, monthName: 'Oktober' };
@@ -569,11 +583,15 @@ export default function App() {
               currentStaff
             );
 
+            const canonicalMonthName = INDONESIAN_MONTH_NAMES[selectedMonth.month - 1] || 'Oktober';
+            const canonicalTotalDays = new Date(selectedMonth.year, selectedMonth.month, 0).getDate() || prev.totalDays || 31;
+
             const updatedSchedule: MonthSchedule = {
               ...prev,
               year: selectedMonth.year,
               month: selectedMonth.month,
-              totalDays: prev.totalDays,
+              monthName: canonicalMonthName,
+              totalDays: canonicalTotalDays,
               staffList: currentStaff,
               days: resolvedDays,
               updatedAt: cloudData.updatedAt || new Date().toISOString(),
@@ -641,11 +659,16 @@ export default function App() {
                 freshSupabase.month,
                 currentStaff
               );
+              const targetYear = freshSupabase.year || selectedMonth.year;
+              const targetMonth = freshSupabase.month || selectedMonth.month;
+              const canonicalMonthName = INDONESIAN_MONTH_NAMES[targetMonth - 1] || 'Oktober';
+              const canonicalTotalDays = new Date(targetYear, targetMonth, 0).getDate() || prev.totalDays || 31;
               return {
                 ...prev,
-                year: freshSupabase.year,
-                month: freshSupabase.month,
-                totalDays: freshSupabase.totalDays || prev.totalDays,
+                year: targetYear,
+                month: targetMonth,
+                monthName: canonicalMonthName,
+                totalDays: freshSupabase.totalDays || canonicalTotalDays,
                 staffList: currentStaff,
                 days: resolvedDays,
                 updatedAt: freshSupabase.updatedAt || new Date().toISOString(),
@@ -665,6 +688,22 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
   }, [selectedMonth.year, selectedMonth.month]);
+
+  // Self-heal schedule.monthName and totalDays if any stale cache had a mismatched monthName
+  useEffect(() => {
+    const expectedMonthName = INDONESIAN_MONTH_NAMES[(schedule.month || 10) - 1];
+    const expectedTotalDays = new Date(schedule.year || 2026, schedule.month || 10, 0).getDate();
+    if (
+      (expectedMonthName && schedule.monthName !== expectedMonthName) ||
+      (expectedTotalDays > 0 && schedule.totalDays !== expectedTotalDays)
+    ) {
+      setSchedule((prev) => ({
+        ...prev,
+        monthName: expectedMonthName || prev.monthName,
+        totalDays: expectedTotalDays || prev.totalDays,
+      }));
+    }
+  }, [schedule.year, schedule.month, schedule.monthName, schedule.totalDays]);
 
   // Handler to switch month without losing data
   const handleSelectMonth = useCallback((year: number, month: number) => {
@@ -894,12 +933,20 @@ export default function App() {
           supabaseData.month,
           currentStaff
         );
+        const canonicalRefreshMonthName =
+          INDONESIAN_MONTH_NAMES[(supabaseData.month || selectedMonth.month) - 1] ||
+          supabaseData.monthName ||
+          schedule.monthName;
+        const canonicalRefreshTotalDays =
+          new Date(supabaseData.year || selectedMonth.year, supabaseData.month || selectedMonth.month, 0).getDate() ||
+          supabaseData.totalDays ||
+          schedule.totalDays;
         const updatedSched: MonthSchedule = {
           ...schedule,
           year: supabaseData.year,
           month: supabaseData.month,
-          monthName: supabaseData.monthName || schedule.monthName,
-          totalDays: supabaseData.totalDays || schedule.totalDays,
+          monthName: canonicalRefreshMonthName,
+          totalDays: canonicalRefreshTotalDays,
           staffList: currentStaff,
           days: resolvedDays,
           updatedAt: supabaseData.updatedAt || new Date().toISOString(),

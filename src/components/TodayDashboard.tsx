@@ -445,10 +445,12 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
     return false;
   });
 
-  // Calculate day date
+  // Calculate day date with canonical monthName derived directly from schedule.month
+  const resolvedMonthName =
+    INDONESIAN_MONTH_NAMES[(schedule.month || 10) - 1] || schedule.monthName || 'Oktober';
   const dayDate = new Date(schedule.year, schedule.month - 1, activeDay);
   const dayName = INDONESIAN_DAY_NAMES[dayDate.getDay()];
-  const dateFormatted = `${dayName}, ${activeDay} ${schedule.monthName} ${schedule.year}`;
+  const dateFormatted = `${dayName}, ${activeDay} ${resolvedMonthName} ${schedule.year}`;
 
   // Otomatis memicu pengingat khusus saat staf ditugaskan pada kode M3 atau P4
   useEffect(() => {
@@ -568,7 +570,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
               )}
             </div>
             <p className="text-[10.5px] text-slate-500 dark:text-slate-400">
-              Monitoring {staffList.length} Wali Asuh • {schedule.monthName} {schedule.year}
+              Monitoring {staffList.length} Wali Asuh • {resolvedMonthName} {schedule.year}
             </p>
           </div>
         </div>
