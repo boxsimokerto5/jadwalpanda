@@ -162,7 +162,7 @@ export function subscribeToLeaveRecords(
   )
     .then(({ data, error }: any) => {
       if (!error && Array.isArray(data)) {
-        const result: Record<string, LeavePermissionRecord> = { ...getLocalLeaveRecords(year, month) };
+        const result: Record<string, LeavePermissionRecord> = {};
         data.forEach((r: any) => {
           result[r.id] = {
             id: r.id,

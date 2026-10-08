@@ -8,10 +8,10 @@ import {
   X, 
   Sparkles
 } from 'lucide-react';
-import { MonthSchedule, Staff, ShiftCode } from '../types';
+import { MonthSchedule, Staff, ShiftCode, MorningPostAssignment, P5TaskAssignment } from '../types';
 import { soundManager } from '../utils/audio';
-import { getLocalP5Assignments } from '../utils/p5TaskService';
-import { getLocalMorningPostAssignments } from '../utils/morningPostService';
+import { getLocalP5Assignments, subscribeToP5Assignments } from '../utils/p5TaskService';
+import { getLocalMorningPostAssignments, subscribeToMorningPostAssignments } from '../utils/morningPostService';
 
 interface ActiveShiftModalProps {
   isOpen: boolean;
@@ -161,12 +161,31 @@ export const ActiveShiftModal: React.FC<ActiveShiftModalProps> = ({
   onNavigateToTab,
 }) => {
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
+  const [p5Assignments, setP5Assignments] = useState<Record<string, P5TaskAssignment>>(() =>
+    getLocalP5Assignments(schedule.year, schedule.month)
+  );
+  const [morningPostAssignments, setMorningPostAssignments] = useState<Record<string, MorningPostAssignment>>(() =>
+    getLocalMorningPostAssignments(schedule.year, schedule.month)
+  );
 
   useEffect(() => {
     if (isOpen) {
       setCurrentDate(new Date());
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    const unsubMorning = subscribeToMorningPostAssignments(schedule.year, schedule.month, (data) => {
+      setMorningPostAssignments(data);
+    });
+    const unsubP5 = subscribeToP5Assignments(schedule.year, schedule.month, (data) => {
+      setP5Assignments(data);
+    });
+    return () => {
+      unsubMorning();
+      unsubP5();
+    };
+  }, [schedule.year, schedule.month]);
 
   const activePeriod = useMemo(() => {
     return getCurrentShiftPeriod(currentDate);
@@ -185,9 +204,6 @@ export const ActiveShiftModal: React.FC<ActiveShiftModalProps> = ({
       shortDesc: string;
       badgeBg: string;
     }[] = [];
-
-    const p5Assignments = getLocalP5Assignments(schedule.year, schedule.month);
-    const morningPostAssignments = getLocalMorningPostAssignments(schedule.year, schedule.month);
 
     staffList.forEach((staff) => {
       const shiftCode = schedule.days[todayDay]?.[staff.id];
@@ -240,7 +256,7 @@ export const ActiveShiftModal: React.FC<ActiveShiftModalProps> = ({
       if (b.isCurrentUser) return 1;
       return a.staff.name.localeCompare(b.staff.name);
     });
-  }, [staffList, schedule.days, schedule.year, schedule.month, todayDay, activePeriod.type, selectedStaffId]);
+  }, [staffList, schedule.days, schedule.year, schedule.month, todayDay, activePeriod.type, selectedStaffId, morningPostAssignments, p5Assignments]);
 
   if (!isOpen) return null;
 

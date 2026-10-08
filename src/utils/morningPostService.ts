@@ -127,23 +127,141 @@ export function subscribeToMorningPostOptions(
 }
 
 /**
+ * Sanitize and normalize MorningPostAssignment records:
+ * 1. Strips out empty records (no postTitle, no quranAssistance, no medicalGuardLabel)
+ * 2. Cleans up stale/ghost "Jaga Puskesmas Wates" pins on staff other than Aziz Fajar Yusniza (staffId 37)
+ *    that were stuck in local cache before the v2 sync fix.
+ */
+function sanitizeMorningPostAssignments(
+  year: number,
+  month: number,
+  raw: Record<string, MorningPostAssignment> | null | undefined
+): { cleaned: Record<string, MorningPostAssignment>; wasModified: boolean } {
+  const cleaned: Record<string, MorningPostAssignment> = {};
+  let wasModified = false;
+
+  if (!raw || typeof raw !== 'object') {
+    return { cleaned, wasModified };
+  }
+
+  for (const [key, item] of Object.entries(raw)) {
+    if (!item || typeof item !== 'object') {
+      wasModified = true;
+      continue;
+    }
+
+    const nextItem: MorningPostAssignment & { explicitlyVerifiedV2?: boolean } = { ...item };
+
+    // Clean up stale cached "Jaga Puskesmas Wates" on staff other than Aziz Fajar Yusniza (staffId === 37)
+    const isAziz =
+      Number(nextItem.staffId) === 37 ||
+      /aziz\s*fajar/i.test(nextItem.staffName || '');
+
+    if (
+      year === 2026 &&
+      month === 10 &&
+      !isAziz &&
+      nextItem.medicalGuardLabel &&
+      /puskesmas\s*wates/i.test(nextItem.medicalGuardLabel) &&
+      !nextItem.explicitlyVerifiedV2
+    ) {
+      delete nextItem.medicalGuardLabel;
+      wasModified = true;
+    }
+
+    const hasPost = Boolean(nextItem.postTitle && String(nextItem.postTitle).trim());
+    const hasQuran = Boolean(nextItem.quranAssistance && String(nextItem.quranAssistance).trim());
+    const hasMedGuard = Boolean(nextItem.medicalGuardLabel && String(nextItem.medicalGuardLabel).trim());
+
+    if (!hasPost && !hasQuran && !hasMedGuard) {
+      wasModified = true;
+      continue;
+    }
+
+    cleaned[key] = nextItem;
+  }
+
+  return { cleaned, wasModified };
+}
+
+/**
+ * Persist morning post assignments to both morning_posts table and system_settings backup
+ */
+async function persistMorningPostAssignmentsToCloud(
+  year: number,
+  month: number,
+  assignments: Record<string, MorningPostAssignment>
+): Promise<boolean> {
+  const { cleaned } = sanitizeMorningPostAssignments(year, month, assignments);
+  const storageKey = `${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`;
+
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(cleaned));
+  } catch {}
+
+  const client = getSupabaseClient();
+  if (!client) return true;
+
+  const schedId = `${year}_${month}`;
+  const settingKey = `morning_posts_${year}_${month}`;
+  const nowIso = new Date().toISOString();
+
+  await Promise.allSettled([
+    client.from('morning_posts').upsert({
+      schedule_id: schedId,
+      assignments_json: cleaned,
+      updated_at: nowIso,
+    }),
+    client.from('system_settings').upsert({
+      key: settingKey,
+      value_json: {
+        assignments: cleaned,
+        updatedAt: nowIso,
+      },
+      updated_at: nowIso,
+    }),
+  ]);
+
+  return true;
+}
+
+/**
+ * Push all current local morning post assignments for a specific month to Supabase Cloud
+ */
+export async function saveAllMorningPostAssignmentsToSupabase(
+  year: number,
+  month: number
+): Promise<boolean> {
+  const current = getLocalMorningPostAssignments(year, month);
+  return persistMorningPostAssignmentsToCloud(year, month, current);
+}
+
+/**
  * Get all morning post assignments for a specific month from localStorage
  */
 export function getLocalMorningPostAssignments(
   year: number,
   month: number
 ): Record<string, MorningPostAssignment> {
+  const storageKey = `${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`;
   try {
-    const saved = localStorage.getItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`);
+    const saved = localStorage.getItem(storageKey);
     if (saved) {
-      return JSON.parse(saved);
+      const parsed = JSON.parse(saved);
+      const { cleaned, wasModified } = sanitizeMorningPostAssignments(year, month, parsed);
+      if (wasModified) {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(cleaned));
+        } catch {}
+      }
+      return cleaned;
     }
   } catch {}
   return {};
 }
 
 /**
- * Fetch all morning post assignments from Supabase and merge with local
+ * Fetch all morning post assignments from Supabase (Single Source of Truth - overwrites stale local cache)
  */
 export async function fetchMorningPostAssignmentsFromSupabase(
   year: number,
@@ -153,22 +271,74 @@ export async function fetchMorningPostAssignmentsFromSupabase(
   const client = getSupabaseClient();
   if (!client) return local;
 
-  try {
-    const schedId = `${year}_${month}`;
-    const { data } = await client
-      .from('morning_posts')
-      .select('assignments_json')
-      .eq('schedule_id', schedId)
-      .maybeSingle();
+  const schedId = `${year}_${month}`;
+  const settingKey = `morning_posts_${year}_${month}`;
+  const storageKey = `${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`;
 
-    if (data?.assignments_json && typeof data.assignments_json === 'object') {
-      const merged = { ...local, ...data.assignments_json };
-      try {
-        localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(merged));
-      } catch {}
-      window.dispatchEvent(new CustomEvent('morning_post_assignments_updated', { detail: { year, month } }));
-      return merged;
+  try {
+    const [tableRes, settingRes] = await Promise.allSettled([
+      client
+        .from('morning_posts')
+        .select('assignments_json, updated_at')
+        .eq('schedule_id', schedId)
+        .maybeSingle(),
+      client
+        .from('system_settings')
+        .select('value_json, updated_at')
+        .eq('key', settingKey)
+        .maybeSingle(),
+    ]);
+
+    let tableAssignments: Record<string, MorningPostAssignment> | null = null;
+    let tableTime = 0;
+    if (
+      tableRes.status === 'fulfilled' &&
+      !tableRes.value.error &&
+      tableRes.value.data?.assignments_json &&
+      typeof tableRes.value.data.assignments_json === 'object'
+    ) {
+      tableAssignments = tableRes.value.data.assignments_json;
+      tableTime = tableRes.value.data.updated_at ? Date.parse(tableRes.value.data.updated_at) || 0 : 0;
     }
+
+    let settingAssignments: Record<string, MorningPostAssignment> | null = null;
+    let settingTime = 0;
+    if (
+      settingRes.status === 'fulfilled' &&
+      !settingRes.value.error &&
+      settingRes.value.data?.value_json?.assignments &&
+      typeof settingRes.value.data.value_json.assignments === 'object'
+    ) {
+      settingAssignments = settingRes.value.data.value_json.assignments;
+      const rawTs = settingRes.value.data.value_json.updatedAt || settingRes.value.data.updated_at;
+      settingTime = rawTs ? Date.parse(rawTs) || 0 : 0;
+    }
+
+    // Pick authoritative server snapshot (prefer newest timestamp)
+    let authoritativeRemote: Record<string, MorningPostAssignment> | null = null;
+    if (tableAssignments && settingAssignments) {
+      authoritativeRemote = settingTime > tableTime ? settingAssignments : tableAssignments;
+    } else if (tableAssignments) {
+      authoritativeRemote = tableAssignments;
+    } else if (settingAssignments) {
+      authoritativeRemote = settingAssignments;
+    }
+
+    if (authoritativeRemote !== null) {
+      const { cleaned, wasModified } = sanitizeMorningPostAssignments(year, month, authoritativeRemote);
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(cleaned));
+      } catch {}
+
+      // If remote had stale entries that were sanitized, heal the cloud record too
+      if (wasModified) {
+        persistMorningPostAssignmentsToCloud(year, month, cleaned).catch(() => {});
+      }
+
+      window.dispatchEvent(new CustomEvent('morning_post_assignments_updated', { detail: { year, month } }));
+      return cleaned;
+    }
+
     return local;
   } catch {
     return local;
@@ -186,35 +356,23 @@ export async function saveMorningPostAssignmentToSupabase(
   const key = `${day}_${staffId}`;
   const existing = current[key];
 
-  const mergedAssignment: MorningPostAssignment = {
+  const mergedAssignment: MorningPostAssignment & { explicitlyVerifiedV2?: boolean } = {
     ...existing,
     ...assignment,
+    explicitlyVerifiedV2: true,
     updatedAt: new Date().toISOString(),
   };
 
   current[key] = mergedAssignment;
+  const { cleaned } = sanitizeMorningPostAssignments(year, month, current);
 
   try {
-    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(current));
+    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(cleaned));
   } catch {}
 
   window.dispatchEvent(new CustomEvent('morning_post_assignments_updated', { detail: { year, month, assignment: mergedAssignment } }));
 
-  const client = getSupabaseClient();
-  if (!client) return true;
-
-  try {
-    const schedId = `${year}_${month}`;
-    await client.from('morning_posts').upsert({
-      schedule_id: schedId,
-      assignments_json: current,
-      updated_at: new Date().toISOString(),
-    });
-    return true;
-  } catch (err: any) {
-    console.warn('[MorningPost] Supabase save notice:', err);
-    return true;
-  }
+  return persistMorningPostAssignmentsToCloud(year, month, cleaned);
 }
 
 /**
@@ -352,7 +510,7 @@ export async function updateStaffQuranAssistance(
     return deleteMorningPostAssignment(year, month, day, staffId);
   }
 
-  const assignment: MorningPostAssignment = {
+  const assignment: MorningPostAssignment & { explicitlyVerifiedV2?: boolean } = {
     ...existing,
     staffId,
     staffName,
@@ -363,6 +521,7 @@ export async function updateStaffQuranAssistance(
     postTitle: existing?.postTitle,
     quranAssistance: quranAssistance,
     medicalGuardLabel: existing?.medicalGuardLabel,
+    explicitlyVerifiedV2: true,
     updatedAt: new Date().toISOString(),
     updatedBy: 'Admin',
   };
@@ -372,26 +531,14 @@ export async function updateStaffQuranAssistance(
   }
 
   current[key] = assignment;
+  const { cleaned } = sanitizeMorningPostAssignments(year, month, current);
   try {
-    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(current));
+    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(cleaned));
   } catch {}
 
   window.dispatchEvent(new CustomEvent('morning_post_assignments_updated', { detail: { year, month, assignment } }));
 
-  const client = getSupabaseClient();
-  if (!client) return true;
-
-  try {
-    const schedId = `${year}_${month}`;
-    await client.from('morning_posts').upsert({
-      schedule_id: schedId,
-      assignments_json: current,
-      updated_at: new Date().toISOString(),
-    });
-    return true;
-  } catch {
-    return true;
-  }
+  return persistMorningPostAssignmentsToCloud(year, month, cleaned);
 }
 
 /**
@@ -417,7 +564,7 @@ export async function updateStaffMedicalGuardLabel(
     return deleteMorningPostAssignment(year, month, day, staffId);
   }
 
-  const assignment: MorningPostAssignment = {
+  const assignment: MorningPostAssignment & { explicitlyVerifiedV2?: boolean } = {
     ...existing,
     staffId,
     staffName,
@@ -428,6 +575,7 @@ export async function updateStaffMedicalGuardLabel(
     postTitle: existing?.postTitle,
     quranAssistance: existing?.quranAssistance,
     medicalGuardLabel: trimmed,
+    explicitlyVerifiedV2: true,
     updatedAt: new Date().toISOString(),
     updatedBy: 'Admin',
   };
@@ -437,26 +585,14 @@ export async function updateStaffMedicalGuardLabel(
   }
 
   current[key] = assignment;
+  const { cleaned } = sanitizeMorningPostAssignments(year, month, current);
   try {
-    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(current));
+    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(cleaned));
   } catch {}
 
   window.dispatchEvent(new CustomEvent('morning_post_assignments_updated', { detail: { year, month, assignment } }));
 
-  const client = getSupabaseClient();
-  if (!client) return true;
-
-  try {
-    const schedId = `${year}_${month}`;
-    await client.from('morning_posts').upsert({
-      schedule_id: schedId,
-      assignments_json: current,
-      updated_at: new Date().toISOString(),
-    });
-    return true;
-  } catch {
-    return true;
-  }
+  return persistMorningPostAssignmentsToCloud(year, month, cleaned);
 }
 
 /**
@@ -478,34 +614,23 @@ export async function clearStaffMainPost(
     return deleteMorningPostAssignment(year, month, day, staffId);
   }
 
-  const updated: MorningPostAssignment = {
+  const updated: MorningPostAssignment & { explicitlyVerifiedV2?: boolean } = {
     ...existing,
+    explicitlyVerifiedV2: true,
     updatedAt: new Date().toISOString(),
   };
   delete updated.postTitle;
   delete updated.customDetail;
 
   current[key] = updated;
+  const { cleaned } = sanitizeMorningPostAssignments(year, month, current);
   try {
-    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(current));
+    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(cleaned));
   } catch {}
 
   window.dispatchEvent(new CustomEvent('morning_post_assignments_updated', { detail: { year, month, assignment: updated } }));
 
-  const client = getSupabaseClient();
-  if (!client) return true;
-
-  try {
-    const schedId = `${year}_${month}`;
-    await client.from('morning_posts').upsert({
-      schedule_id: schedId,
-      assignments_json: current,
-      updated_at: new Date().toISOString(),
-    });
-    return true;
-  } catch {
-    return true;
-  }
+  return persistMorningPostAssignmentsToCloud(year, month, cleaned);
 }
 
 /**
@@ -521,26 +646,14 @@ export async function deleteMorningPostAssignment(
   const key = `${day}_${staffId}`;
   delete current[key];
 
+  const { cleaned } = sanitizeMorningPostAssignments(year, month, current);
   try {
-    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(current));
+    localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(cleaned));
   } catch {}
 
   window.dispatchEvent(new CustomEvent('morning_post_assignments_updated', { detail: { year, month } }));
 
-  const client = getSupabaseClient();
-  if (!client) return true;
-
-  try {
-    const schedId = `${year}_${month}`;
-    await client.from('morning_posts').upsert({
-      schedule_id: schedId,
-      assignments_json: current,
-      updated_at: new Date().toISOString(),
-    });
-    return true;
-  } catch {
-    return true;
-  }
+  return persistMorningPostAssignmentsToCloud(year, month, cleaned);
 }
 
 /**
@@ -552,26 +665,65 @@ export function subscribeToMorningPostAssignments(
   onData: (assignments: Record<string, MorningPostAssignment>) => void,
   onError?: (err: unknown) => void
 ): () => void {
-  const localData = getLocalMorningPostAssignments(year, month);
-  onData(localData);
+  const storageKey = `${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`;
+  let lastFingerprint = '';
+
+  const emitIfChanged = (data: Record<string, MorningPostAssignment>) => {
+    const { cleaned } = sanitizeMorningPostAssignments(year, month, data);
+    const fp = JSON.stringify(cleaned);
+    if (fp === lastFingerprint) return;
+    lastFingerprint = fp;
+    onData(cleaned);
+  };
+
+  emitIfChanged(getLocalMorningPostAssignments(year, month));
 
   const handleLocalUpdate = () => {
-    onData(getLocalMorningPostAssignments(year, month));
+    emitIfChanged(getLocalMorningPostAssignments(year, month));
   };
+
+  const handleStorageEvent = (e: StorageEvent) => {
+    if (e.key === storageKey && e.newValue) {
+      try {
+        emitIfChanged(JSON.parse(e.newValue));
+      } catch {}
+    }
+  };
+
   window.addEventListener('morning_post_assignments_updated', handleLocalUpdate);
+  window.addEventListener('storage', handleStorageEvent);
 
   const client = getSupabaseClient();
   if (!client) {
     return () => {
       window.removeEventListener('morning_post_assignments_updated', handleLocalUpdate);
+      window.removeEventListener('storage', handleStorageEvent);
     };
   }
 
   fetchMorningPostAssignmentsFromSupabase(year, month).then((res) => {
-    if (res) onData(res);
+    if (res) emitIfChanged(res);
   });
 
+  const handleFocus = () => {
+    fetchMorningPostAssignmentsFromSupabase(year, month).then((res) => {
+      if (res) emitIfChanged(res);
+    });
+  };
+  window.addEventListener('focus', handleFocus);
+
   const schedId = `${year}_${month}`;
+  const settingKey = `morning_posts_${year}_${month}`;
+
+  // Resilient polling fallback every 6 seconds to guarantee multi-device sync
+  const pollInterval = setInterval(() => {
+    fetchMorningPostAssignmentsFromSupabase(year, month)
+      .then((res) => {
+        if (res) emitIfChanged(res);
+      })
+      .catch(() => {});
+  }, 6000);
+
   try {
     const channel = client
       .channel(`morning_posts_${schedId}`)
@@ -579,23 +731,44 @@ export function subscribeToMorningPostAssignments(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'morning_posts', filter: `schedule_id=eq.${schedId}` },
         (payload: any) => {
-          if (payload.new?.assignments_json) {
+          if (payload.new?.assignments_json && typeof payload.new.assignments_json === 'object') {
+            const { cleaned } = sanitizeMorningPostAssignments(year, month, payload.new.assignments_json);
             try {
-              localStorage.setItem(`${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(payload.new.assignments_json));
+              localStorage.setItem(storageKey, JSON.stringify(cleaned));
             } catch {}
-            onData(payload.new.assignments_json);
+            emitIfChanged(cleaned);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'system_settings', filter: `key=eq.${settingKey}` },
+        (payload: any) => {
+          const remoteMap = payload.new?.value_json?.assignments;
+          if (remoteMap && typeof remoteMap === 'object') {
+            const { cleaned } = sanitizeMorningPostAssignments(year, month, remoteMap);
+            try {
+              localStorage.setItem(storageKey, JSON.stringify(cleaned));
+            } catch {}
+            emitIfChanged(cleaned);
           }
         }
       )
       .subscribe();
 
     return () => {
+      clearInterval(pollInterval);
       window.removeEventListener('morning_post_assignments_updated', handleLocalUpdate);
+      window.removeEventListener('storage', handleStorageEvent);
+      window.removeEventListener('focus', handleFocus);
       client.removeChannel(channel);
     };
   } catch {
     return () => {
+      clearInterval(pollInterval);
       window.removeEventListener('morning_post_assignments_updated', handleLocalUpdate);
+      window.removeEventListener('storage', handleStorageEvent);
+      window.removeEventListener('focus', handleFocus);
     };
   }
 }

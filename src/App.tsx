@@ -75,7 +75,10 @@ import {
   saveHandoverReportsToSupabase,
   getLocalHandoverReports
 } from './utils/supabaseBackend';
-import { fetchMorningPostAssignmentsFromSupabase } from './utils/morningPostService';
+import { 
+  fetchMorningPostAssignmentsFromSupabase,
+  saveAllMorningPostAssignmentsToSupabase
+} from './utils/morningPostService';
 import { fetchP5TaskOptionsFromSupabase } from './utils/p5TaskService';
 import { SupabaseMigrationModal } from './components/SupabaseMigrationModal';
 
@@ -641,6 +644,7 @@ export default function App() {
     const handleVisibilityOrFocus = async () => {
       if (document.visibilityState === 'visible') {
         try {
+          fetchMorningPostAssignmentsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => {});
           const freshSupabase = await fetchScheduleFromSupabase(selectedMonth.year, selectedMonth.month);
           if (freshSupabase && freshSupabase.days && Object.keys(freshSupabase.days).length > 0) {
             setSchedule((prev) => {
@@ -894,6 +898,7 @@ export default function App() {
       await saveSopTasksToSupabase(sopTasks, 'Sinkronisasi Manual').catch(() => {});
       await saveAllStudentMedicalPlansToSupabase(medicalPlans).catch(() => {});
       await saveHandoverReportsToSupabase(getLocalHandoverReports()).catch(() => {});
+      await saveAllMorningPostAssignmentsToSupabase(schedule.year, schedule.month).catch(() => {});
       setCloudStatus('connected');
       if (ok) {
         soundManager.playChime();
