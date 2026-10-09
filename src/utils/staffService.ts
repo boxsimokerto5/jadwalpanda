@@ -149,18 +149,34 @@ export async function saveStaffListToSupabase(
 
   try {
     const nowIso = new Date().toISOString();
-    // 1. Save authoritative list + deletedIds to system_settings
-    await client.from('system_settings').upsert({
-      key: STAFF_DOC_ID,
-      value_json: {
-        list: cleanList,
-        deletedIds: Array.from(deletedIds),
-        count: cleanList.length,
-        updatedAt: nowIso,
-        updatedBy,
-      },
-      updated_at: nowIso,
-    });
+    const rosterPayload = {
+      list: cleanList,
+      deletedIds: Array.from(deletedIds),
+      count: cleanList.length,
+      updatedAt: nowIso,
+      updatedBy,
+    };
+
+    // 1. Save authoritative list + deletedIds to system_settings & schedules mirror
+    await Promise.allSettled([
+      client.from('system_settings').upsert({
+        key: STAFF_DOC_ID,
+        value_json: rosterPayload,
+        updated_at: nowIso,
+      }),
+      client.from('schedules').upsert(
+        {
+          id: 'meta_staff_roster',
+          year: -9999,
+          month: -1,
+          total_days: 0,
+          days_json: rosterPayload as any,
+          updated_at: nowIso,
+          updated_by: updatedBy,
+        },
+        { onConflict: 'id' }
+      ),
+    ]);
 
     // 2. Also upsert active records to relational staff table
     if (cleanList.length > 0) {
@@ -219,19 +235,34 @@ export async function deleteStaffPermanentlyFromSupabase(
 
   try {
     const nowIso = new Date().toISOString();
+    const rosterPayload = {
+      list: cleanList,
+      deletedIds: Array.from(deletedIds),
+      count: cleanList.length,
+      updatedAt: nowIso,
+      updatedBy,
+    };
 
-    // 1. Update system_settings FIRST so real-time listeners immediately receive the deletedIds and updated list
-    await client.from('system_settings').upsert({
-      key: STAFF_DOC_ID,
-      value_json: {
-        list: cleanList,
-        deletedIds: Array.from(deletedIds),
-        count: cleanList.length,
-        updatedAt: nowIso,
-        updatedBy,
-      },
-      updated_at: nowIso,
-    });
+    // 1. Update system_settings & schedules mirror FIRST so real-time listeners immediately receive the deletedIds and updated list
+    await Promise.allSettled([
+      client.from('system_settings').upsert({
+        key: STAFF_DOC_ID,
+        value_json: rosterPayload,
+        updated_at: nowIso,
+      }),
+      client.from('schedules').upsert(
+        {
+          id: 'meta_staff_roster',
+          year: -9999,
+          month: -1,
+          total_days: 0,
+          days_json: rosterPayload as any,
+          updated_at: nowIso,
+          updated_by: updatedBy,
+        },
+        { onConflict: 'id' }
+      ),
+    ]);
 
     // 2. Clean up foreign key references in dependent tables before deleting from staff table
     try {
@@ -265,24 +296,35 @@ export async function fetchStaffListFromSupabase(): Promise<Staff[] | null> {
   }
 
   try {
-    // Try system_settings first
-    const { data: settingData } = await client
-      .from('system_settings')
-      .select('value_json')
-      .eq('key', STAFF_DOC_ID)
-      .maybeSingle();
+    const [settingRes, mirrorRes] = await Promise.allSettled([
+      client
+        .from('system_settings')
+        .select('value_json')
+        .eq('key', STAFF_DOC_ID)
+        .maybeSingle(),
+      client
+        .from('schedules')
+        .select('days_json')
+        .eq('id', 'meta_staff_roster')
+        .maybeSingle(),
+    ]);
+
+    const settingPayload =
+      (settingRes.status === 'fulfilled' && !settingRes.value.error && settingRes.value.data?.value_json) ||
+      (mirrorRes.status === 'fulfilled' && !mirrorRes.value.error && mirrorRes.value.data?.days_json) ||
+      null;
 
     const localDeletedIds = getDeletedStaffIds();
-    if (Array.isArray(settingData?.value_json?.deletedIds)) {
-      settingData.value_json.deletedIds.forEach((id: any) => {
+    if (Array.isArray(settingPayload?.deletedIds)) {
+      settingPayload.deletedIds.forEach((id: any) => {
         const n = Number(id);
         if (!isNaN(n) && n > 0) localDeletedIds.add(n);
       });
       saveDeletedStaffIds(localDeletedIds);
     }
 
-    if (settingData?.value_json?.list && Array.isArray(settingData.value_json.list) && settingData.value_json.list.length > 0) {
-      const filtered = (settingData.value_json.list as Staff[])
+    if (settingPayload?.list && Array.isArray(settingPayload.list) && settingPayload.list.length > 0) {
+      const filtered = (settingPayload.list as Staff[])
         .filter((s) => s && typeof s.id === 'number' && !localDeletedIds.has(s.id))
         .sort((a, b) => a.id - b.id);
       saveLocalStaffList(filtered);

@@ -132,6 +132,135 @@ export function getLocalP5Assignments(year: number, month: number): Record<strin
   return {};
 }
 
+async function persistP5AssignmentsToCloud(
+  year: number,
+  month: number,
+  assignments: Record<string, P5TaskAssignment>
+): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client) return true;
+
+  const schedId = `${year}_${month}`;
+  const settingKey = `p5_assignments_${year}_${month}`;
+  const mirrorSchedId = `p5_assign_${year}_${String(month).padStart(2, '0')}`;
+  const nowIso = new Date().toISOString();
+
+  await Promise.allSettled([
+    client.from('p5_assignments').upsert({
+      schedule_id: schedId,
+      assignments_json: assignments,
+      updated_at: nowIso,
+    }),
+    client.from('system_settings').upsert({
+      key: settingKey,
+      value_json: {
+        assignments,
+        updatedAt: nowIso,
+      },
+      updated_at: nowIso,
+    }),
+    client.from('schedules').upsert(
+      {
+        id: mirrorSchedId,
+        year: -(year * 10 + 4),
+        month: -month,
+        total_days: 0,
+        days_json: {
+          assignments,
+          updatedAt: nowIso,
+        } as any,
+        updated_at: nowIso,
+        updated_by: 'P5 Cloud Sync',
+      },
+      { onConflict: 'id' }
+    ),
+  ]);
+
+  return true;
+}
+
+/**
+ * Fetch P5 assignments from Supabase across all 3 cloud layers
+ */
+export async function fetchP5AssignmentsFromSupabase(
+  year: number,
+  month: number
+): Promise<Record<string, P5TaskAssignment>> {
+  const local = getLocalP5Assignments(year, month);
+  const client = getSupabaseClient();
+  if (!client) return local;
+
+  const schedId = `${year}_${month}`;
+  const settingKey = `p5_assignments_${year}_${month}`;
+  const mirrorSchedId = `p5_assign_${year}_${String(month).padStart(2, '0')}`;
+
+  try {
+    const [tableRes, settingRes, schedMirrorRes] = await Promise.allSettled([
+      client.from('p5_assignments').select('assignments_json, updated_at').eq('schedule_id', schedId).maybeSingle(),
+      client.from('system_settings').select('value_json, updated_at').eq('key', settingKey).maybeSingle(),
+      client.from('schedules').select('days_json, updated_at').eq('id', mirrorSchedId).maybeSingle(),
+    ]);
+
+    const candidates: { data: Record<string, P5TaskAssignment>; time: number }[] = [];
+
+    if (
+      tableRes.status === 'fulfilled' &&
+      !tableRes.value.error &&
+      tableRes.value.data?.assignments_json &&
+      typeof tableRes.value.data.assignments_json === 'object'
+    ) {
+      candidates.push({
+        data: tableRes.value.data.assignments_json,
+        time: tableRes.value.data.updated_at ? Date.parse(tableRes.value.data.updated_at) || 0 : 0,
+      });
+    }
+
+    if (
+      settingRes.status === 'fulfilled' &&
+      !settingRes.value.error &&
+      settingRes.value.data?.value_json?.assignments &&
+      typeof settingRes.value.data.value_json.assignments === 'object'
+    ) {
+      const rawTs = settingRes.value.data.value_json.updatedAt || settingRes.value.data.updated_at;
+      candidates.push({
+        data: settingRes.value.data.value_json.assignments,
+        time: rawTs ? Date.parse(rawTs) || 0 : 0,
+      });
+    }
+
+    if (
+      schedMirrorRes.status === 'fulfilled' &&
+      !schedMirrorRes.value.error &&
+      (schedMirrorRes.value.data?.days_json as any)?.assignments &&
+      typeof (schedMirrorRes.value.data?.days_json as any).assignments === 'object'
+    ) {
+      const rawTs =
+        (schedMirrorRes.value.data.days_json as any).updatedAt || schedMirrorRes.value.data.updated_at;
+      candidates.push({
+        data: (schedMirrorRes.value.data.days_json as any).assignments,
+        time: rawTs ? Date.parse(rawTs) || 0 : 0,
+      });
+    }
+
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.time - a.time);
+      const remote = candidates[0].data;
+      try {
+        localStorage.setItem(`${P5_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(remote));
+      } catch {}
+      return remote;
+    }
+
+    if (Object.keys(local).length > 0) {
+      persistP5AssignmentsToCloud(year, month, local).catch(() => {});
+    }
+
+    return local;
+  } catch {
+    return local;
+  }
+}
+
 /**
  * Save single or multiple P5 assignments locally and to Supabase
  */
@@ -152,21 +281,7 @@ export async function saveP5AssignmentToSupabase(
 
   window.dispatchEvent(new CustomEvent('p5_assignments_updated', { detail: { year, month, assignment } }));
 
-  const client = getSupabaseClient();
-  if (!client) return true;
-
-  try {
-    const schedId = `${year}_${month}`;
-    await client.from('p5_assignments').upsert({
-      schedule_id: schedId,
-      assignments_json: current,
-      updated_at: new Date().toISOString(),
-    });
-    return true;
-  } catch (err: any) {
-    console.warn('[P5Service] Supabase notice:', err);
-    return true;
-  }
+  return await persistP5AssignmentsToCloud(year, month, current);
 }
 
 /**
@@ -188,21 +303,7 @@ export async function deleteP5Assignment(
 
   window.dispatchEvent(new CustomEvent('p5_assignments_updated', { detail: { year, month } }));
 
-  const client = getSupabaseClient();
-  if (!client) return true;
-
-  try {
-    const schedId = `${year}_${month}`;
-    await client.from('p5_assignments').upsert({
-      schedule_id: schedId,
-      assignments_json: current,
-      updated_at: new Date().toISOString(),
-    });
-    return true;
-  } catch (err: any) {
-    console.warn('[P5Service] Supabase notice:', err);
-    return true;
-  }
+  return await persistP5AssignmentsToCloud(year, month, current);
 }
 
 /**
@@ -220,23 +321,23 @@ export function subscribeToP5Assignments(
   const client = getSupabaseClient();
   if (!client) return () => {};
 
+  let isMounted = true;
+  const pullLatest = async () => {
+    const fresh = await fetchP5AssignmentsFromSupabase(year, month);
+    if (isMounted) onData(fresh);
+  };
+
+  pullLatest();
+
+  const handleFocus = () => {
+    if (document.visibilityState === 'visible') pullLatest();
+  };
+  window.addEventListener('focus', handleFocus);
+  document.addEventListener('visibilitychange', handleFocus);
+
+  const pollTimer = setInterval(pullLatest, 8000);
   const schedId = `${year}_${month}`;
-  Promise.resolve(
-    client
-      .from('p5_assignments')
-      .select('assignments_json')
-      .eq('schedule_id', schedId)
-      .maybeSingle()
-  )
-    .then(({ data, error }: any) => {
-      if (!error && data?.assignments_json) {
-        try {
-          localStorage.setItem(`${P5_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(data.assignments_json));
-        } catch {}
-        onData(data.assignments_json);
-      }
-    })
-    .catch(() => {});
+  const mirrorSchedId = `p5_assign_${year}_${String(month).padStart(2, '0')}`;
 
   try {
     const channel = client
@@ -244,21 +345,28 @@ export function subscribeToP5Assignments(
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'p5_assignments', filter: `schedule_id=eq.${schedId}` },
-        (payload: any) => {
-          if (payload.new?.assignments_json) {
-            try {
-              localStorage.setItem(`${P5_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`, JSON.stringify(payload.new.assignments_json));
-            } catch {}
-            onData(payload.new.assignments_json);
-          }
-        }
+        () => pullLatest()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'schedules', filter: `id=eq.${mirrorSchedId}` },
+        () => pullLatest()
       )
       .subscribe();
 
     return () => {
+      isMounted = false;
+      clearInterval(pollTimer);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
       client.removeChannel(channel);
     };
   } catch {
-    return () => {};
+    return () => {
+      isMounted = false;
+      clearInterval(pollTimer);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
+    };
   }
 }

@@ -968,19 +968,40 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
     let staffList: Staff[] | undefined = undefined;
     let hasExplicitMonthStaff = false;
 
-    // 1. Check month-specific staff roster in system_settings first
+    // 1. Check month-specific staff roster in system_settings or schedules mirror first
     try {
-      const { data: monthStaffSetting } = await client
-        .from('system_settings')
-        .select('value_json')
-        .eq('key', `schedule_staff_${year}_${month}`)
-        .maybeSingle();
-      if (
-        monthStaffSetting?.value_json?.staffList &&
-        Array.isArray(monthStaffSetting.value_json.staffList) &&
-        monthStaffSetting.value_json.staffList.length > 0
-      ) {
-        staffList = monthStaffSetting.value_json.staffList;
+      const rosterMirrorId = `roster_${year}_${String(month).padStart(2, '0')}`;
+      const [monthStaffRes, mirrorRosterRes] = await Promise.allSettled([
+        client
+          .from('system_settings')
+          .select('value_json')
+          .eq('key', `schedule_staff_${year}_${month}`)
+          .maybeSingle(),
+        client
+          .from('schedules')
+          .select('days_json')
+          .eq('id', rosterMirrorId)
+          .maybeSingle(),
+      ]);
+
+      const settingStaff =
+        monthStaffRes.status === 'fulfilled' && !monthStaffRes.value.error
+          ? monthStaffRes.value.data?.value_json?.staffList
+          : null;
+      const mirrorStaff =
+        mirrorRosterRes.status === 'fulfilled' && !mirrorRosterRes.value.error
+          ? (mirrorRosterRes.value.data?.days_json as any)?.staffList
+          : null;
+
+      const resolvedRoster =
+        Array.isArray(settingStaff) && settingStaff.length > 0
+          ? settingStaff
+          : Array.isArray(mirrorStaff) && mirrorStaff.length > 0
+          ? mirrorStaff
+          : null;
+
+      if (resolvedRoster) {
+        staffList = resolvedRoster;
         hasExplicitMonthStaff = true;
       }
     } catch {}
@@ -1132,14 +1153,29 @@ export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy:
       console.warn('Supabase schedule upsert notice:', schedErr.message);
     }
 
-    // 2. Upsert month-specific staff roster in system_settings & master staff records
+    // 2. Upsert month-specific staff roster in system_settings, schedules mirror & master staff records
     if (activeRoster.length > 0) {
+      const rosterMirrorId = `roster_${schedule.year}_${String(schedule.month).padStart(2, '0')}`;
       try {
-        await client.from('system_settings').upsert({
-          key: `schedule_staff_${schedule.year}_${schedule.month}`,
-          value_json: { staffList: activeRoster, updatedAt: nowIso, updatedBy },
-          updated_at: nowIso,
-        });
+        await Promise.allSettled([
+          client.from('system_settings').upsert({
+            key: `schedule_staff_${schedule.year}_${schedule.month}`,
+            value_json: { staffList: activeRoster, updatedAt: nowIso, updatedBy },
+            updated_at: nowIso,
+          }),
+          client.from('schedules').upsert(
+            {
+              id: rosterMirrorId,
+              year: -(schedule.year * 10 + 2),
+              month: -schedule.month,
+              total_days: 0,
+              days_json: { staffList: activeRoster, updatedAt: nowIso, updatedBy } as any,
+              updated_at: nowIso,
+              updated_by: updatedBy,
+            },
+            { onConflict: 'id' }
+          ),
+        ]);
       } catch {}
 
       const staffRecords = activeRoster.map((s) => ({

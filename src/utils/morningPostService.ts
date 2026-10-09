@@ -204,6 +204,7 @@ async function persistMorningPostAssignmentsToCloud(
 
   const schedId = `${year}_${month}`;
   const settingKey = `morning_posts_${year}_${month}`;
+  const mirrorSchedId = `mpost_assign_${year}_${String(month).padStart(2, '0')}`;
   const nowIso = new Date().toISOString();
 
   await Promise.allSettled([
@@ -220,6 +221,21 @@ async function persistMorningPostAssignmentsToCloud(
       },
       updated_at: nowIso,
     }),
+    client.from('schedules').upsert(
+      {
+        id: mirrorSchedId,
+        year: -(year * 10 + 3),
+        month: -month,
+        total_days: 0,
+        days_json: {
+          assignments: cleaned,
+          updatedAt: nowIso,
+        } as any,
+        updated_at: nowIso,
+        updated_by: 'Morning Post Cloud Sync',
+      },
+      { onConflict: 'id' }
+    ),
   ]);
 
   return true;
@@ -273,10 +289,11 @@ export async function fetchMorningPostAssignmentsFromSupabase(
 
   const schedId = `${year}_${month}`;
   const settingKey = `morning_posts_${year}_${month}`;
+  const mirrorSchedId = `mpost_assign_${year}_${String(month).padStart(2, '0')}`;
   const storageKey = `${MORNING_POST_ASSIGNMENTS_STORAGE_PREFIX}_${year}_${month}`;
 
   try {
-    const [tableRes, settingRes] = await Promise.allSettled([
+    const [tableRes, settingRes, schedMirrorRes] = await Promise.allSettled([
       client
         .from('morning_posts')
         .select('assignments_json, updated_at')
@@ -287,41 +304,59 @@ export async function fetchMorningPostAssignmentsFromSupabase(
         .select('value_json, updated_at')
         .eq('key', settingKey)
         .maybeSingle(),
+      client
+        .from('schedules')
+        .select('days_json, updated_at')
+        .eq('id', mirrorSchedId)
+        .maybeSingle(),
     ]);
 
-    let tableAssignments: Record<string, MorningPostAssignment> | null = null;
-    let tableTime = 0;
+    const candidates: { data: Record<string, MorningPostAssignment>; time: number }[] = [];
+
     if (
       tableRes.status === 'fulfilled' &&
       !tableRes.value.error &&
       tableRes.value.data?.assignments_json &&
       typeof tableRes.value.data.assignments_json === 'object'
     ) {
-      tableAssignments = tableRes.value.data.assignments_json;
-      tableTime = tableRes.value.data.updated_at ? Date.parse(tableRes.value.data.updated_at) || 0 : 0;
+      candidates.push({
+        data: tableRes.value.data.assignments_json,
+        time: tableRes.value.data.updated_at ? Date.parse(tableRes.value.data.updated_at) || 0 : 0,
+      });
     }
 
-    let settingAssignments: Record<string, MorningPostAssignment> | null = null;
-    let settingTime = 0;
     if (
       settingRes.status === 'fulfilled' &&
       !settingRes.value.error &&
       settingRes.value.data?.value_json?.assignments &&
       typeof settingRes.value.data.value_json.assignments === 'object'
     ) {
-      settingAssignments = settingRes.value.data.value_json.assignments;
       const rawTs = settingRes.value.data.value_json.updatedAt || settingRes.value.data.updated_at;
-      settingTime = rawTs ? Date.parse(rawTs) || 0 : 0;
+      candidates.push({
+        data: settingRes.value.data.value_json.assignments,
+        time: rawTs ? Date.parse(rawTs) || 0 : 0,
+      });
+    }
+
+    if (
+      schedMirrorRes.status === 'fulfilled' &&
+      !schedMirrorRes.value.error &&
+      (schedMirrorRes.value.data?.days_json as any)?.assignments &&
+      typeof (schedMirrorRes.value.data?.days_json as any).assignments === 'object'
+    ) {
+      const rawTs =
+        (schedMirrorRes.value.data.days_json as any).updatedAt || schedMirrorRes.value.data.updated_at;
+      candidates.push({
+        data: (schedMirrorRes.value.data.days_json as any).assignments,
+        time: rawTs ? Date.parse(rawTs) || 0 : 0,
+      });
     }
 
     // Pick authoritative server snapshot (prefer newest timestamp)
     let authoritativeRemote: Record<string, MorningPostAssignment> | null = null;
-    if (tableAssignments && settingAssignments) {
-      authoritativeRemote = settingTime > tableTime ? settingAssignments : tableAssignments;
-    } else if (tableAssignments) {
-      authoritativeRemote = tableAssignments;
-    } else if (settingAssignments) {
-      authoritativeRemote = settingAssignments;
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.time - a.time);
+      authoritativeRemote = candidates[0].data;
     }
 
     if (authoritativeRemote !== null) {
@@ -330,13 +365,17 @@ export async function fetchMorningPostAssignmentsFromSupabase(
         localStorage.setItem(storageKey, JSON.stringify(cleaned));
       } catch {}
 
-      // If remote had stale entries that were sanitized, heal the cloud record too
       if (wasModified) {
         persistMorningPostAssignmentsToCloud(year, month, cleaned).catch(() => {});
       }
 
       window.dispatchEvent(new CustomEvent('morning_post_assignments_updated', { detail: { year, month } }));
       return cleaned;
+    }
+
+    // If cloud had no records yet but local device has assignments, auto-push to cloud
+    if (Object.keys(local).length > 0) {
+      persistMorningPostAssignmentsToCloud(year, month, local).catch(() => {});
     }
 
     return local;

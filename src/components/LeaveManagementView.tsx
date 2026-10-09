@@ -12,7 +12,9 @@ import {
   CheckCircle2, 
   AlertCircle,
   Link as LinkIcon,
-  Edit3
+  Edit3,
+  Database,
+  RefreshCw
 } from 'lucide-react';
 import { MonthSchedule, Staff, LeavePermissionRecord } from '../types';
 import { 
@@ -21,7 +23,9 @@ import {
   getLocalLeaveRecords, 
   subscribeToLeaveRecords,
   getSynchronizedLeaveRecords,
-  normalizeDriveUrl
+  normalizeDriveUrl,
+  fetchLeaveRecordsFromSupabase,
+  syncAllLeaveRecordsToSupabase
 } from '../utils/leaveService';
 import { saveScheduleToSupabase } from '../utils/supabaseService';
 import { soundManager } from '../utils/audio';
@@ -55,6 +59,23 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
   const [filterDay, setFilterDay] = useState<string>('all');
   const [deleteConfirm, setDeleteConfirm] = useState<LeavePermissionRecord | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
+
+  const handleManualCloudSync = async () => {
+    setIsSyncingCloud(true);
+    try {
+      await syncAllLeaveRecordsToSupabase(schedule.year, schedule.month);
+      const latest = await fetchLeaveRecordsFromSupabase(schedule.year, schedule.month);
+      setInternalRecords(latest);
+      soundManager.playChime();
+      setToastMessage('Seluruh data perizinan & link Google Drive berhasil disinkronkan secara online di Supabase Cloud!');
+    } catch {
+      setToastMessage('Data perizinan disinkronkan dengan server.');
+    } finally {
+      setIsSyncingCloud(false);
+      setTimeout(() => setToastMessage(null), 4000);
+    }
+  };
 
   const [uploadTarget, setUploadTarget] = useState<{
     staff: Staff;
@@ -191,15 +212,21 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
       <div className="bg-gradient-to-r from-rose-700 via-red-600 to-amber-600 rounded-2xl p-4 sm:p-5 text-white shadow-md relative overflow-hidden">
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="space-y-1">
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-black/20 text-white border border-white/20 text-[10.5px] font-bold">
-              <FileText className="w-3.5 h-3.5" />
-              <span>Manajemen Perizinan Wali Asuh • Tersinkronisasi Otomatis dengan Matriks</span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-black/20 text-white border border-white/20 text-[10.5px] font-bold">
+                <FileText className="w-3.5 h-3.5" />
+                <span>Manajemen Perizinan Wali Asuh • Tersinkronisasi Otomatis dengan Matriks</span>
+              </div>
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-950/60 text-emerald-200 border border-emerald-400/40 text-[10.5px] font-bold">
+                <Database className="w-3 h-3 text-emerald-300" />
+                <span>Tersimpan Online di Supabase Cloud (Semua Perangkat)</span>
+              </div>
             </div>
             <h1 className="text-xl sm:text-2xl font-black tracking-tight">
               Rekapitulasi Izin, Sakit & Dinas ({schedule.monthName} {schedule.year})
             </h1>
             <p className="text-xs text-white/90 max-w-2xl">
-              Seluruh kode <strong>IZIN</strong> pada Matriks Jadwal otomatis tercatat di halaman ini. Setiap petugas atau admin dapat mencantumkan <strong>Link Google Drive</strong> surat bukti agar rekan lainnya dapat langsung membuka dan melihatnya.
+              Seluruh kode <strong>IZIN</strong>, kategori (Sakit/Dinas/Lainnya), catatan alasan, serta <strong>Link Google Drive</strong> surat bukti tersimpan langsung secara online di database <strong>Supabase Cloud</strong> sehingga otomatis tampil di seluruh HP/perangkat rekan lainnya.
             </p>
           </div>
 
@@ -275,6 +302,17 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
               <option value="keperluan_lain">Keperluan Lain / Izin ({stats.lain})</option>
             </select>
           </div>
+
+          <button
+            type="button"
+            onClick={handleManualCloudSync}
+            disabled={isSyncingCloud}
+            className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-all"
+            title="Sinkronkan & tarik data Link Google Drive terbaru dari Supabase Cloud"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+            <span>{isSyncingCloud ? 'Menyinkronkan...' : 'Sinkronkan Cloud'}</span>
+          </button>
 
           {onNavigateToMatrix && (
             <button

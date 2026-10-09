@@ -83,7 +83,8 @@ import {
   fetchMorningPostAssignmentsFromSupabase,
   saveAllMorningPostAssignmentsToSupabase
 } from './utils/morningPostService';
-import { fetchP5TaskOptionsFromSupabase } from './utils/p5TaskService';
+import { fetchP5TaskOptionsFromSupabase, fetchP5AssignmentsFromSupabase } from './utils/p5TaskService';
+import { fetchLeaveRecordsFromSupabase, syncAllLeaveRecordsToSupabase } from './utils/leaveService';
 import { SupabaseMigrationModal } from './components/SupabaseMigrationModal';
 
 function resolveScheduleDays(
@@ -268,9 +269,9 @@ export default function App() {
     return 'dashboard';
   });
 
-  // Safeguard: redirect regular staff away from admin-only tabs
+  // Safeguard: redirect regular staff away from admin-only tabs ('leave' is accessible to all roles)
   useEffect(() => {
-    if (currentUserRole !== 'admin' && (currentTab === 'admin' || currentTab === 'leave' || currentTab === 'auto' || currentTab === 'sop' || currentTab === 'staff-management')) {
+    if (currentUserRole !== 'admin' && (currentTab === 'admin' || currentTab === 'auto' || currentTab === 'sop' || currentTab === 'staff-management')) {
       setCurrentTab('dashboard');
     }
   }, [currentUserRole, currentTab]);
@@ -645,6 +646,8 @@ export default function App() {
         }
         try {
           fetchMorningPostAssignmentsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => {});
+          fetchLeaveRecordsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => {});
+          fetchP5AssignmentsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => {});
           const freshSupabase = await fetchScheduleFromSupabase(selectedMonth.year, selectedMonth.month);
           if (isScheduleSaveInProgress()) {
             return;
@@ -968,6 +971,7 @@ export default function App() {
       await saveAllStudentMedicalPlansToSupabase(medicalPlans).catch(() => {});
       await saveHandoverReportsToSupabase(getLocalHandoverReports()).catch(() => {});
       await saveAllMorningPostAssignmentsToSupabase(schedule.year, schedule.month).catch(() => {});
+      await syncAllLeaveRecordsToSupabase(schedule.year, schedule.month).catch(() => {});
       setCloudStatus('connected');
       if (ok) {
         soundManager.playChime();
@@ -992,6 +996,8 @@ export default function App() {
         fetchScheduleFromSupabase(selectedMonth.year, selectedMonth.month),
         fetchStaffListFromSupabase().catch(() => null),
         fetchMorningPostAssignmentsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => null),
+        fetchLeaveRecordsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => null),
+        fetchP5AssignmentsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => null),
         fetchP5TaskOptionsFromSupabase().catch(() => null),
         fetchHandoverReportsFromSupabase().catch(() => null),
       ]);
