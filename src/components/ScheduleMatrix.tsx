@@ -912,7 +912,7 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
                               setP5ModalTarget({ day, staff });
                             } else if ((shift === 'P1' || shift === 'P2' || shift === 'P3') && userRole === 'admin') {
                               setMorningPostModalTarget({ day, staff, shiftCode: shift });
-                            } else if (shift === 'IZIN' && userRole === 'admin') {
+                            } else if (shift === 'IZIN') {
                               setLeaveModalTarget({ day, staff });
                             } else {
                               handleCellClick(day, staff.id);
@@ -921,7 +921,7 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
                           className={`p-0.2 border-r border-slate-200 dark:border-slate-700/80 cursor-pointer select-none transition-all ${
                             isFocusedDay ? 'bg-blue-50 dark:bg-blue-900/20 font-bold' : ''
                           } ${isM3 ? 'bg-fuchsia-100/60 dark:bg-fuchsia-950/40' : ''} ${isP5 ? 'bg-emerald-50/50 dark:bg-emerald-950/30' : ''} ${isIzin ? 'bg-rose-50/70 dark:bg-rose-950/40' : ''}`}
-                          title={`Tgl ${day} - ${staff.name}: ${meta?.name || shift} ${p5Task ? `[Tugas: ${p5Task}]` : ''} ${morningPost ? `[Pos: ${morningPost}]` : ''} ${medicalGuard ? `[🏥 ${medicalGuard}]` : ''} ${leaveRecord ? `[Izin: ${leaveRecord.leaveType}${leaveRecord.notes ? ` - ${leaveRecord.notes}` : ''}]` : ''}`}
+                          title={`Tgl ${day} - ${staff.name}: ${meta?.name || shift} ${p5Task ? `[Tugas: ${p5Task}]` : ''} ${morningPost ? `[Pos: ${morningPost}]` : ''} ${medicalGuard ? `[🏥 ${medicalGuard}]` : ''} ${leaveRecord ? `[Izin: ${leaveRecord.leaveType}${leaveRecord.notes ? ` - ${leaveRecord.notes}` : ''}${leaveRecord.proofUrl ? ' • Klik untuk buka Link Google Drive' : ''}]` : isIzin ? '[Klik untuk lihat/atur rincian & Link Google Drive]' : ''}`}
                         >
                           <div className="flex flex-col items-center justify-center">
                             <span
@@ -939,6 +939,19 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
                             >
                               {shift}
                             </span>
+                            {isIzin && leaveRecord && (leaveRecord.proofUrl || leaveRecord.leaveType === 'sakit' || leaveRecord.leaveType === 'dinas') && (
+                              <span
+                                className={`text-[7px] leading-none px-0.5 py-0.2 rounded font-black truncate max-w-[36px] mt-0.5 ${
+                                  leaveRecord.proofUrl
+                                    ? 'bg-emerald-600 text-white'
+                                    : leaveRecord.leaveType === 'sakit'
+                                    ? 'bg-rose-100 dark:bg-rose-900/70 text-rose-900 dark:text-rose-200'
+                                    : 'bg-blue-100 dark:bg-blue-900/70 text-blue-900 dark:text-blue-200'
+                                }`}
+                              >
+                                {leaveRecord.proofUrl ? '🔗Drive' : leaveRecord.leaveType === 'sakit' ? 'Sakit' : 'Dinas'}
+                              </span>
+                            )}
                             {(isP1 || isP2 || isP3) && morningPost && (
                               <span 
                                 className={`text-[7.5px] leading-none px-0.5 py-0.2 rounded font-black truncate max-w-[36px] mt-0.5 ${

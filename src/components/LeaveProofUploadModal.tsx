@@ -1,17 +1,20 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
-  Upload, 
+  Link as LinkIcon, 
   X, 
   Check, 
-  Image as ImageIcon, 
   FileText, 
   AlertCircle,
-  Eye,
-  Trash2
+  ExternalLink,
+  Trash2,
+  HeartPulse,
+  Briefcase,
+  HelpCircle,
+  Info
 } from 'lucide-react';
-import { Staff, LeavePermissionRecord } from '../types';
+import { Staff, LeavePermissionRecord, LeaveType } from '../types';
 import { soundManager } from '../utils/audio';
-import { attachLeaveProof, getLeaveTypeLabel } from '../utils/leaveService';
+import { attachLeaveProof, getLeaveTypeLabel, normalizeDriveUrl } from '../utils/leaveService';
 
 interface LeaveProofUploadModalProps {
   isOpen: boolean;
@@ -36,82 +39,54 @@ export const LeaveProofUploadModal: React.FC<LeaveProofUploadModalProps> = ({
   record,
   onUploaded,
 }) => {
-  const [filePreview, setFilePreview] = useState<string | null>(record?.proofUrl || null);
-  const [fileName, setFileName] = useState<string>(record?.proofFileName || '');
+  const [driveLink, setDriveLink] = useState<string>(record?.proofUrl || '');
+  const [docLabel, setDocLabel] = useState<string>(record?.proofFileName || '');
+  const [leaveType, setLeaveType] = useState<LeaveType>(record?.leaveType || 'sakit');
+  const [notes, setNotes] = useState<string>(record?.notes || '');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setDriveLink(record?.proofUrl || '');
+      setDocLabel(record?.proofFileName || '');
+      setLeaveType(record?.leaveType || 'sakit');
+      setNotes(record?.notes || '');
+      setErrorMsg(null);
+    }
+  }, [isOpen, record]);
 
   if (!isOpen) return null;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const normalizedUrl = normalizeDriveUrl(driveLink);
 
-    // Check mime type (JPG/PNG)
-    if (!['image/jpeg', 'image/png', 'image/jpg'].includes(file.type)) {
-      setErrorMsg('Format file harus berupa JPG atau PNG!');
+  const handleSaveLink = async () => {
+    const trimmed = driveLink.trim();
+    if (!trimmed) {
+      setErrorMsg('Silakan tempelkan (paste) link Google Drive dokumen bukti terlebih dahulu!');
       return;
     }
 
-    // Limit size to max 4MB, then compress
-    if (file.size > 5 * 1024 * 1024) {
-      setErrorMsg('Ukuran file maksimal 5 MB!');
+    const finalUrl = normalizeDriveUrl(trimmed);
+    try {
+      new URL(finalUrl);
+    } catch {
+      setErrorMsg('Format link tidak valid. Contoh: https://drive.google.com/file/d/...');
       return;
     }
 
     setErrorMsg(null);
-    setFileName(file.name);
-    setIsProcessing(true);
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new Image();
-      img.onload = () => {
-        // Compress using canvas to ensure lightweight storage
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 1200;
-        const MAX_HEIGHT = 1200;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, width, height);
-
-        // Quality 0.75 for JPEG
-        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.75);
-        setFilePreview(compressedBase64);
-        setIsProcessing(false);
-      };
-      img.src = event.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleSaveUpload = async () => {
-    if (!filePreview) {
-      setErrorMsg('Silakan pilih foto surat bukti terlebih dahulu!');
-      return;
-    }
-
     setIsProcessing(true);
     soundManager.playChime();
 
-    const leaveType = record?.leaveType || 'sakit';
+    const finalLabel =
+      docLabel.trim() ||
+      (leaveType === 'sakit'
+        ? 'Surat Keterangan Sakit (Google Drive)'
+        : leaveType === 'dinas'
+        ? 'Surat Tugas Dinas Luar (Google Drive)'
+        : 'Dokumen Bukti Izin (Google Drive)');
+
     await attachLeaveProof(
       year,
       month,
@@ -119,9 +94,10 @@ export const LeaveProofUploadModal: React.FC<LeaveProofUploadModalProps> = ({
       staff.id,
       staff.name,
       leaveType,
-      filePreview,
-      fileName || `bukti_${leaveType}_${staff.name.replace(/\s+/g, '_')}.jpg`,
-      staff.name
+      finalUrl,
+      finalLabel,
+      staff.name,
+      notes.trim()
     );
 
     const updated: LeavePermissionRecord = {
@@ -132,9 +108,9 @@ export const LeaveProofUploadModal: React.FC<LeaveProofUploadModalProps> = ({
       month,
       year,
       leaveType,
-      notes: record?.notes || '',
-      proofUrl: filePreview,
-      proofFileName: fileName,
+      notes: notes.trim(),
+      proofUrl: finalUrl,
+      proofFileName: finalLabel,
       proofUploadedAt: new Date().toISOString(),
       proofUploadedBy: staff.name,
       createdAt: record?.createdAt || new Date().toISOString(),
@@ -146,113 +122,217 @@ export const LeaveProofUploadModal: React.FC<LeaveProofUploadModalProps> = ({
     onClose();
   };
 
+  const handleRemoveLink = async () => {
+    setIsProcessing(true);
+    soundManager.playBell();
+
+    await attachLeaveProof(
+      year,
+      month,
+      day,
+      staff.id,
+      staff.name,
+      leaveType,
+      '',
+      '',
+      staff.name,
+      notes.trim()
+    );
+
+    const updated: LeavePermissionRecord = {
+      id: `${year}_${month}_${day}_${staff.id}`,
+      staffId: staff.id,
+      staffName: staff.name,
+      day,
+      month,
+      year,
+      leaveType,
+      notes: notes.trim(),
+      proofUrl: undefined,
+      proofFileName: undefined,
+      proofUploadedAt: undefined,
+      proofUploadedBy: undefined,
+      createdAt: record?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setIsProcessing(false);
+    onUploaded(updated);
+    onClose();
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-xs">
-      <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 sm:p-5 max-w-md w-full border-2 border-emerald-500 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+      <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 sm:p-5 max-w-md w-full border-2 border-emerald-500 shadow-2xl space-y-3.5 animate-in fade-in zoom-in-95 max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-2.5">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-600 text-white flex items-center justify-center font-bold text-sm shadow-md">
-              <Upload className="w-5 h-5" />
+              <LinkIcon className="w-5 h-5" />
             </div>
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                Unggah Bukti Izin
+                Tautan Bukti Perizinan (Google Drive)
               </span>
               <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-white leading-tight">
-                Surat {record?.leaveType === 'dinas' ? 'Tugas Dinas' : 'Dokter / Resep Sakit'}
+                Cantumkan Link Google Drive
               </h3>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Info Petugas & Kategori */}
+        {/* Info Petugas & Tanggal */}
         <div className="p-3 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/40 space-y-1">
           <div className="flex items-center justify-between text-xs">
             <span className="font-bold text-slate-900 dark:text-white">{staff.name}</span>
             <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-600 text-white">
-              {record ? getLeaveTypeLabel(record.leaveType) : 'Izin'}
+              {getLeaveTypeLabel(leaveType)}
             </span>
           </div>
           <div className="text-[11px] text-slate-600 dark:text-slate-300">
-            Tanggal: <strong>{day} {monthName} {year}</strong>
+            Tanggal Izin: <strong>{day} {monthName} {year}</strong>
           </div>
-          {record?.notes && (
-            <div className="text-[11px] text-slate-500 italic mt-1">
-              Catatan Admin: "{record.notes}"
-            </div>
-          )}
         </div>
 
-        {/* Upload Zone */}
-        <div className="space-y-2">
+        {/* Pilihan Kategori Izin */}
+        <div className="space-y-1.5">
           <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
-            Pilih Foto Dokumen (Format JPG atau PNG):
+            Kategori Perizinan:
           </label>
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/jpg"
-            onChange={handleFileChange}
-            className="hidden"
-          />
-
-          {!filePreview ? (
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-emerald-300 dark:border-emerald-700/60 hover:border-emerald-500 rounded-xl p-6 text-center cursor-pointer bg-emerald-50/30 dark:bg-emerald-950/10 transition-colors space-y-2"
+          <div className="grid grid-cols-3 gap-1.5">
+            <button
+              type="button"
+              onClick={() => setLeaveType('sakit')}
+              className={`flex flex-col items-center gap-1 p-2 rounded-xl border text-center cursor-pointer transition-all ${
+                leaveType === 'sakit'
+                  ? 'border-rose-500 bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 font-bold ring-1 ring-rose-500/30'
+                  : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-750'
+              }`}
             >
-              <div className="w-12 h-12 rounded-full bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-300 mx-auto flex items-center justify-center">
-                <ImageIcon className="w-6 h-6" />
-              </div>
-              <div>
-                <span className="text-xs font-bold text-emerald-700 dark:text-emerald-300 block">
-                  Klik untuk Memilih Foto Dokumen
+              <HeartPulse className="w-4 h-4 text-rose-500" />
+              <span className="text-[11px]">Sakit</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setLeaveType('dinas')}
+              className={`flex flex-col items-center gap-1 p-2 rounded-xl border text-center cursor-pointer transition-all ${
+                leaveType === 'dinas'
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-bold ring-1 ring-blue-500/30'
+                  : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-750'
+              }`}
+            >
+              <Briefcase className="w-4 h-4 text-blue-500" />
+              <span className="text-[11px]">Dinas Luar</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setLeaveType('keperluan_lain')}
+              className={`flex flex-col items-center gap-1 p-2 rounded-xl border text-center cursor-pointer transition-all ${
+                leaveType === 'keperluan_lain'
+                  ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 font-bold ring-1 ring-amber-500/30'
+                  : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-750'
+              }`}
+            >
+              <HelpCircle className="w-4 h-4 text-amber-500" />
+              <span className="text-[11px]">Keperluan Lain</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Input Link Google Drive */}
+        <div className="space-y-2">
+          <label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center justify-between">
+            <span>Link Google Drive Surat / Bukti Izin: <span className="text-rose-500">*</span></span>
+          </label>
+          <div className="relative">
+            <LinkIcon className="w-4 h-4 text-emerald-600 dark:text-emerald-400 absolute left-3 top-2.5" />
+            <input
+              type="url"
+              value={driveLink}
+              onChange={(e) => {
+                setDriveLink(e.target.value);
+                if (errorMsg) setErrorMsg(null);
+              }}
+              placeholder="https://drive.google.com/file/d/..."
+              className="w-full pl-9 pr-8 py-2 text-xs rounded-xl border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:outline-none font-mono"
+            />
+            {driveLink && (
+              <button
+                type="button"
+                onClick={() => setDriveLink('')}
+                className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                title="Bersihkan input link"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Judul / Nama Dokumen Opsional */}
+          <div className="space-y-1 pt-1">
+            <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+              <span>Judul / Nama Dokumen:</span>
+              <span className="text-[10px] font-normal text-slate-400">(opsional)</span>
+            </label>
+            <input
+              type="text"
+              value={docLabel}
+              onChange={(e) => setDocLabel(e.target.value)}
+              placeholder="Contoh: Surat Keterangan Dokter RSUD / Surat Tugas"
+              className="w-full px-3 py-1.5 text-xs rounded-xl border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+            />
+          </div>
+
+          {/* Keterangan / Catatan Tambahan */}
+          <div className="space-y-1 pt-1">
+            <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+              <span>Keterangan / Catatan Alasan:</span>
+              <span className="text-[10px] font-normal text-slate-400">(opsional)</span>
+            </label>
+            <textarea
+              rows={2}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Contoh: Istirahat sakit 2 hari sesuai surat dokter..."
+              className="w-full px-3 py-1.5 text-xs rounded-xl border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+            />
+          </div>
+
+          {/* Tombol Tes Buka Link jika sudah diisi */}
+          {normalizedUrl && (
+            <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span className="text-[11px] font-medium text-emerald-900 dark:text-emerald-200 truncate">
+                  {normalizedUrl}
                 </span>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400">
-                  Surat Keterangan Dokter, Resep Obat, atau Surat Tugas (JPG / PNG)
-                </span>
               </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="relative rounded-xl border border-slate-300 dark:border-slate-700 overflow-hidden bg-slate-100 dark:bg-slate-900 max-h-56 flex items-center justify-center">
-                <img
-                  src={filePreview}
-                  alt="Bukti Izin"
-                  className="max-h-56 w-auto object-contain rounded-lg shadow-inner"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFilePreview(null);
-                    setFileName('');
-                  }}
-                  className="absolute top-2 right-2 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white cursor-pointer shadow-md"
-                  title="Ganti Foto"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
-                <span className="truncate max-w-[200px] font-medium">{fileName || 'Foto Dokumen'}</span>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline cursor-pointer"
-                >
-                  Ganti File
-                </button>
-              </div>
+              <a
+                href={normalizedUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold shrink-0 shadow-2xs transition-colors"
+              >
+                <ExternalLink className="w-3 h-3" />
+                <span>Tes Buka Link</span>
+              </a>
             </div>
           )}
+
+          {/* Panduan Akses Google Drive */}
+          <div className="p-2.5 rounded-xl bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800/60 text-[11px] text-blue-900 dark:text-blue-200 flex items-start gap-2 leading-relaxed">
+            <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+            <span>
+              Pastikan pengaturan berbagi (<em>Share</em>) file di Google Drive diatur ke{' '}
+              <strong>"Siapa saja yang memiliki link" (Anyone with the link)</strong> agar rekan Wali Asuh lainnya dapat langsung melihat dokumen saat mengklik tautan.
+            </span>
+          </div>
 
           {errorMsg && (
             <div className="p-2 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-300 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-1.5">
@@ -263,23 +343,38 @@ export const LeaveProofUploadModal: React.FC<LeaveProofUploadModalProps> = ({
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
-          >
-            Tutup
-          </button>
-          <button
-            type="button"
-            onClick={handleSaveUpload}
-            disabled={isProcessing || !filePreview}
-            className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center gap-1.5"
-          >
-            <Check className="w-4 h-4" />
-            <span>{isProcessing ? 'Mengunggah...' : 'Simpan & Kirim Bukti'}</span>
-          </button>
+        <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+          <div>
+            {record?.proofUrl && (
+              <button
+                type="button"
+                onClick={handleRemoveLink}
+                disabled={isProcessing}
+                className="px-2.5 py-1.5 rounded-xl border border-rose-300 dark:border-rose-700 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Hapus Link</span>
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveLink}
+              disabled={isProcessing || !driveLink.trim()}
+              className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center gap-1.5"
+            >
+              <Check className="w-4 h-4" />
+              <span>{isProcessing ? 'Menyimpan...' : 'Simpan Link Google Drive'}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

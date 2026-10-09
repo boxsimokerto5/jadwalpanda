@@ -596,6 +596,19 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
 
               <button
+                onClick={() => setCurrentTab('leave')}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${
+                  currentTab === 'leave'
+                    ? 'bg-rose-600 text-white shadow-xs font-extrabold'
+                    : 'text-rose-800 dark:text-rose-300 bg-rose-50/80 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/50 border border-rose-300 dark:border-rose-800'
+                }`}
+                title="Rekapitulasi Izin, Sakit & Dinas serta Link Google Drive Bukti Surat"
+              >
+                <FileText className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                <span>Menu Perizinan (IZIN)</span>
+              </button>
+
+              <button
                 onClick={() => setCurrentTab('codeguide')}
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
                   currentTab === 'codeguide'

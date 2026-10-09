@@ -4,22 +4,29 @@ import {
   Search, 
   Filter, 
   Calendar, 
-  User, 
   HeartPulse, 
   Briefcase, 
   HelpCircle, 
-  Image as ImageIcon, 
   ExternalLink, 
   Trash2, 
   CheckCircle2, 
-  Clock, 
-  X,
-  Download,
-  AlertCircle
+  AlertCircle,
+  Link as LinkIcon,
+  Edit3
 } from 'lucide-react';
-import { MonthSchedule, Staff, LeavePermissionRecord, LeaveType } from '../types';
-import { getLeaveTypeLabel, deleteLeaveRecord, getLocalLeaveRecords, subscribeToLeaveRecords } from '../utils/leaveService';
+import { MonthSchedule, Staff, LeavePermissionRecord } from '../types';
+import { 
+  getLeaveTypeLabel, 
+  deleteLeaveRecord, 
+  getLocalLeaveRecords, 
+  subscribeToLeaveRecords,
+  getSynchronizedLeaveRecords,
+  normalizeDriveUrl
+} from '../utils/leaveService';
+import { saveScheduleToSupabase } from '../utils/supabaseService';
 import { soundManager } from '../utils/audio';
+import { LeaveProofUploadModal } from './LeaveProofUploadModal';
+import { LeaveAssignmentModal } from './LeaveAssignmentModal';
 
 interface LeaveManagementViewProps {
   schedule: MonthSchedule;
@@ -38,19 +45,27 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
   schedule,
   setSchedule,
   staffList,
-  activeDay,
-  setActiveDay,
   leaveRecords: propLeaveRecords,
   onUpdateRecord,
   userRole = 'admin',
   onNavigateToMatrix,
-  onNavigateToDashboard,
 }) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [filterType, setFilterType] = useState<string>('all');
-  const [previewProof, setPreviewProof] = useState<LeavePermissionRecord | null>(null);
+  const [filterDay, setFilterDay] = useState<string>('all');
   const [deleteConfirm, setDeleteConfirm] = useState<LeavePermissionRecord | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const [uploadTarget, setUploadTarget] = useState<{
+    staff: Staff;
+    day: number;
+    record: LeavePermissionRecord;
+  } | null>(null);
+
+  const [editTarget, setEditTarget] = useState<{
+    staff: Staff;
+    day: number;
+  } | null>(null);
 
   const [internalRecords, setInternalRecords] = useState<Record<string, LeavePermissionRecord>>(() =>
     getLocalLeaveRecords(schedule.year, schedule.month)
@@ -72,13 +87,18 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
 
   const activeLeaveRecords = propLeaveRecords || internalRecords;
 
-  // Convert leaveRecords object to array
+  const staffMap = useMemo(() => {
+    const map = new Map<number, Staff>();
+    (staffList && staffList.length > 0 ? staffList : schedule.staffList || []).forEach((s) => {
+      map.set(s.id, s);
+    });
+    return map;
+  }, [staffList, schedule.staffList]);
+
+  // Automatically synchronize all 'IZIN' & 'C' cells from the schedule matrix with saved leave records
   const recordList: LeavePermissionRecord[] = useMemo(() => {
-    const list = Object.values(activeLeaveRecords) as LeavePermissionRecord[];
-    return list.filter(
-      (r) => r.year === schedule.year && r.month === schedule.month
-    ).sort((a, b) => a.day - b.day);
-  }, [activeLeaveRecords, schedule.year, schedule.month]);
+    return getSynchronizedLeaveRecords(schedule, staffList, activeLeaveRecords);
+  }, [schedule, staffList, activeLeaveRecords]);
 
   // Statistics
   const stats = useMemo(() => {
@@ -102,21 +122,59 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
   // Filtered records
   const filteredRecords = useMemo(() => {
     return recordList.filter((r) => {
+      const st = staffMap.get(r.staffId);
+      const q = searchTerm.toLowerCase().trim();
       const matchSearch =
-        r.staffName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (r.notes && r.notes.toLowerCase().includes(searchTerm.toLowerCase()));
+        !q ||
+        r.staffName.toLowerCase().includes(q) ||
+        (st?.code && st.code.toLowerCase().includes(q)) ||
+        (r.notes && r.notes.toLowerCase().includes(q)) ||
+        (r.proofFileName && r.proofFileName.toLowerCase().includes(q));
       const matchType = filterType === 'all' || r.leaveType === filterType;
-      return matchSearch && matchType;
+      const matchDay = filterDay === 'all' || r.day === Number(filterDay);
+      return matchSearch && matchType && matchDay;
     });
-  }, [recordList, searchTerm, filterType]);
+  }, [recordList, staffMap, searchTerm, filterType, filterDay]);
 
   const handleDelete = async (r: LeavePermissionRecord) => {
     soundManager.playBell();
     await deleteLeaveRecord(r.year, r.month, r.day, r.staffId);
+
+    // If this staff had 'IZIN' in the matrix on this day, also set matrix shift to 'O' so it stays synced
+    if (setSchedule && schedule.days?.[r.day]?.[r.staffId] === 'IZIN') {
+      setSchedule((prev) => {
+        const newDays = { ...prev.days };
+        newDays[r.day] = { ...newDays[r.day], [r.staffId]: 'O' };
+        const updated: MonthSchedule = {
+          ...prev,
+          days: newDays,
+          updatedAt: new Date().toISOString(),
+          updatedBy: 'Administrator (Hapus Izin)',
+        };
+        try {
+          localStorage.setItem(`wali_asuh_schedule_v16_${prev.year}_${prev.month}`, JSON.stringify(updated));
+          localStorage.setItem(`wali_asuh_schedule_v15_${prev.year}_${prev.month}`, JSON.stringify(updated));
+        } catch {}
+        saveScheduleToSupabase(updated, 'Administrator (Hapus Izin)').catch(() => {});
+        return updated;
+      });
+    }
+
+    setInternalRecords(getLocalLeaveRecords(r.year, r.month));
     setDeleteConfirm(null);
-    setToastMessage(`Data perizinan ${r.staffName} berhasil dihapus.`);
+    setToastMessage(`Data perizinan ${r.staffName} (Tgl ${r.day} ${schedule.monthName}) berhasil dihapus.`);
     setTimeout(() => setToastMessage(null), 4000);
     onUpdateRecord?.();
+  };
+
+  const resolveStaffObject = (r: LeavePermissionRecord): Staff => {
+    return (
+      staffMap.get(r.staffId) || {
+        id: r.staffId,
+        name: r.staffName,
+        role: 'Wali Asuh',
+      }
+    );
   };
 
   return (
@@ -135,13 +193,13 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
           <div className="space-y-1">
             <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-black/20 text-white border border-white/20 text-[10.5px] font-bold">
               <FileText className="w-3.5 h-3.5" />
-              <span>Manajemen Perizinan Wali Asuh</span>
+              <span>Manajemen Perizinan Wali Asuh • Tersinkronisasi Otomatis dengan Matriks</span>
             </div>
             <h1 className="text-xl sm:text-2xl font-black tracking-tight">
-              Rekapitulasi Izin, Sakit & Dinas
+              Rekapitulasi Izin, Sakit & Dinas ({schedule.monthName} {schedule.year})
             </h1>
             <p className="text-xs text-white/90 max-w-2xl">
-              Daftar izin petugas (Kode <strong>IZIN</strong>) dengan rincian kategori sakit, dinas luar, atau keperluan lain beserta lampiran bukti surat resmi format JPG/PNG.
+              Seluruh kode <strong>IZIN</strong> pada Matriks Jadwal otomatis tercatat di halaman ini. Setiap petugas atau admin dapat mencantumkan <strong>Link Google Drive</strong> surat bukti agar rekan lainnya dapat langsung membuka dan melihatnya.
             </p>
           </div>
 
@@ -161,7 +219,7 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
             </div>
             <div className="bg-white/20 backdrop-blur-xs rounded-xl p-2 border border-white/25">
               <div className="text-lg font-black text-emerald-200">{stats.withProof}</div>
-              <div className="text-[10px] text-white/90 font-medium">Ada Bukti</div>
+              <div className="text-[10px] text-white/90 font-medium">Link Drive</div>
             </div>
           </div>
         </div>
@@ -174,7 +232,7 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
             <input
               type="text"
-              placeholder="Cari nama wali asuh atau catatan..."
+              placeholder="Cari nama wali asuh, kode (L1/P1), atau catatan..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:ring-1 focus:ring-rose-500 focus:outline-none"
@@ -182,11 +240,31 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
           </div>
         </div>
 
-        {/* Filter Dropdown & Navigation */}
-        <div className="flex items-center gap-2">
+        {/* Filter Dropdowns & Navigation */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Day Filter */}
+          <div className="flex items-center gap-1.5">
+            <Calendar className="w-3.5 h-3.5 text-rose-500" />
+            <select
+              aria-label="Filter berdasarkan tanggal"
+              value={filterDay}
+              onChange={(e) => setFilterDay(e.target.value)}
+              className="text-xs py-1.5 px-2.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold cursor-pointer"
+            >
+              <option value="all">Semua Tanggal (1 - {schedule.totalDays})</option>
+              {Array.from({ length: schedule.totalDays }, (_, i) => i + 1).map((d) => (
+                <option key={d} value={String(d)}>
+                  Tanggal {d} {schedule.monthName}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Category Filter */}
           <div className="flex items-center gap-1.5">
             <Filter className="w-3.5 h-3.5 text-slate-500" />
             <select
+              aria-label="Filter berdasarkan kategori izin"
               value={filterType}
               onChange={(e) => setFilterType(e.target.value)}
               className="text-xs py-1.5 px-2.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-semibold cursor-pointer"
@@ -194,7 +272,7 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
               <option value="all">Semua Kategori ({stats.total})</option>
               <option value="sakit">Sakit ({stats.sakit})</option>
               <option value="dinas">Dinas Luar ({stats.dinas})</option>
-              <option value="keperluan_lain">Keperluan Lain ({stats.lain})</option>
+              <option value="keperluan_lain">Keperluan Lain / Izin ({stats.lain})</option>
             </select>
           </div>
 
@@ -218,10 +296,10 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
               <FileText className="w-6 h-6" />
             </div>
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-              Belum Ada Data Perizinan
+              Belum Ada Data Perizinan Sesuai Filter
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-              Untuk menambahkan izin, pilih kode "IZIN" pada matriks jadwal atau atur perizinan wali asuh.
+              Setiap petugas dengan kode <strong>IZIN</strong> pada matriks jadwal bulan {schedule.monthName} {schedule.year} akan langsung tampil otomatis di sini.
             </p>
           </div>
         ) : (
@@ -229,14 +307,27 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
             {filteredRecords.map((record) => {
               const isSakit = record.leaveType === 'sakit';
               const isDinas = record.leaveType === 'dinas';
+              const stObj = resolveStaffObject(record);
+              const driveUrl = normalizeDriveUrl(record.proofUrl);
 
               return (
                 <div
                   key={record.id}
                   className="p-3 sm:p-4 hover:bg-slate-50/70 dark:hover:bg-slate-750 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
-                  <div className="space-y-1">
+                  <div className="space-y-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
+                      {stObj.code && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-black ${
+                            stObj.gender === 'L'
+                              ? 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 border border-blue-300 dark:border-blue-800'
+                              : 'bg-pink-100 text-pink-800 dark:bg-pink-950 dark:text-pink-300 border border-pink-300 dark:border-pink-800'
+                          }`}
+                        >
+                          {stObj.code}
+                        </span>
+                      )}
                       <span className="text-xs sm:text-sm font-black text-slate-900 dark:text-white">
                         {record.staffName}
                       </span>
@@ -255,7 +346,7 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
                         <span>{getLeaveTypeLabel(record.leaveType)}</span>
                       </span>
 
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
                         <Calendar className="w-2.5 h-2.5 text-rose-500" />
                         <span>Tanggal {record.day} {schedule.monthName} {record.year}</span>
                       </span>
@@ -263,52 +354,85 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
 
                     {record.notes && (
                       <p className="text-xs text-slate-600 dark:text-slate-300 font-medium">
-                        Keterangan Admin: <span className="italic">"{record.notes}"</span>
+                        Keterangan: <span className="italic">"{record.notes}"</span>
                       </p>
                     )}
 
-                    <div className="flex flex-wrap items-center gap-3 text-[10.5px] text-slate-500 dark:text-slate-400">
-                      {record.proofUploadedAt && (
-                        <span>
-                          Bukti diunggah oleh <strong>{record.proofUploadedBy || record.staffName}</strong> pada{' '}
-                          {new Date(record.proofUploadedAt).toLocaleDateString('id-ID', {
-                            day: 'numeric',
-                            month: 'short',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })} WIB
+                    {driveUrl && (
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-emerald-700 dark:text-emerald-400">
+                        <LinkIcon className="w-3 h-3 shrink-0" />
+                        <span className="font-semibold truncate max-w-xs sm:max-w-md">
+                          {record.proofFileName || driveUrl}
                         </span>
-                      )}
-                    </div>
+                        {record.proofUploadedAt && (
+                          <span className="text-[10px] text-slate-400">
+                            • Diperbarui oleh {record.proofUploadedBy || record.staffName}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
-                  {/* Actions & Proof Status */}
-                  <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
-                    {record.proofUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => setPreviewProof(record)}
+                  {/* Actions & Google Drive Proof Link */}
+                  <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-center">
+                    {driveUrl ? (
+                      <a
+                        href={driveUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
-                        title="Lihat foto bukti surat (JPG/PNG)"
+                        title="Klik untuk membuka dokumen bukti langsung di Google Drive"
                       >
-                        <ImageIcon className="w-3.5 h-3.5" />
-                        <span>Lihat Bukti Foto</span>
-                      </button>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Buka Link Google Drive</span>
+                      </a>
                     ) : (
-                      <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 text-xs italic">
-                        Belum ada bukti foto
+                      <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-700/80 text-slate-500 dark:text-slate-400 text-[11px] italic">
+                        Belum ada link Drive
                       </span>
                     )}
 
+                    {/* Button for Staff or Admin to attach/edit Google Drive Link & Category */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setUploadTarget({
+                          staff: stObj,
+                          day: record.day,
+                          record,
+                        })
+                      }
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/70 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 text-xs font-bold transition-colors cursor-pointer"
+                      title="Cantumkan atau ubah Link Google Drive & Kategori Izin"
+                    >
+                      <LinkIcon className="w-3.5 h-3.5" />
+                      <span>{driveUrl ? 'Edit Link' : '+ Link Drive'}</span>
+                    </button>
+
                     {userRole === 'admin' && (
-                      <button
-                        type="button"
-                        onClick={() => setDeleteConfirm(record)}
-                        className="p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/50 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
-                        title="Hapus data perizinan ini"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditTarget({
+                              staff: stObj,
+                              day: record.day,
+                            })
+                          }
+                          className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                          title="Atur kategori izin & keterangan admin"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeleteConfirm(record)}
+                          className="p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/50 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
+                          title="Hapus status izin pada tanggal ini"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -318,50 +442,48 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
         )}
       </div>
 
-      {/* Proof Lightbox Modal */}
-      {previewProof && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 max-w-lg w-full border-2 border-emerald-500 shadow-2xl space-y-3 animate-in fade-in zoom-in-95 max-h-[92vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-700">
-              <div>
-                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                  Dokumen Bukti {getLeaveTypeLabel(previewProof.leaveType)}
-                </span>
-                <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
-                  {previewProof.staffName} (Tgl {previewProof.day} {schedule.monthName})
-                </h3>
-              </div>
-              <button
-                onClick={() => setPreviewProof(null)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {/* Modal Cantumkan / Edit Link Google Drive */}
+      {uploadTarget && (
+        <LeaveProofUploadModal
+          isOpen={!!uploadTarget}
+          onClose={() => setUploadTarget(null)}
+          staff={uploadTarget.staff}
+          day={uploadTarget.day}
+          month={schedule.month}
+          year={schedule.year}
+          monthName={schedule.monthName}
+          record={uploadTarget.record}
+          onUploaded={(updated) => {
+            setInternalRecords(getLocalLeaveRecords(schedule.year, schedule.month));
+            setToastMessage(
+              updated.proofUrl
+                ? `Link Google Drive bukti izin ${uploadTarget.staff.name} berhasil disimpan!`
+                : `Data perizinan ${uploadTarget.staff.name} berhasil diperbarui.`
+            );
+            setTimeout(() => setToastMessage(null), 4000);
+            onUpdateRecord?.();
+          }}
+        />
+      )}
 
-            <div className="rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-center justify-center max-h-[65vh]">
-              <img
-                src={previewProof.proofUrl}
-                alt="Dokumen Bukti"
-                className="max-h-[65vh] w-auto object-contain rounded-lg"
-              />
-            </div>
-
-            <div className="flex items-center justify-between text-xs pt-1">
-              <span className="text-slate-500 dark:text-slate-400 truncate max-w-[200px]">
-                {previewProof.proofFileName || 'Bukti Dokumen'}
-              </span>
-              <a
-                href={previewProof.proofUrl}
-                download={previewProof.proofFileName || `bukti_${previewProof.staffName}.jpg`}
-                className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-bold hover:underline"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Unduh File</span>
-              </a>
-            </div>
-          </div>
-        </div>
+      {/* Modal Pengaturan Detail Izin (Admin) */}
+      {editTarget && (
+        <LeaveAssignmentModal
+          isOpen={!!editTarget}
+          onClose={() => setEditTarget(null)}
+          staff={editTarget.staff}
+          day={editTarget.day}
+          month={schedule.month}
+          year={schedule.year}
+          monthName={schedule.monthName}
+          userRole={userRole}
+          onSaved={() => {
+            setInternalRecords(getLocalLeaveRecords(schedule.year, schedule.month));
+            setToastMessage(`Rincian perizinan ${editTarget.staff.name} berhasil diperbarui!`);
+            setTimeout(() => setToastMessage(null), 4000);
+            onUpdateRecord?.();
+          }}
+        />
       )}
 
       {/* Delete Confirmation Modal */}
@@ -370,22 +492,26 @@ export const LeaveManagementView: React.FC<LeaveManagementViewProps> = ({
           <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 sm:p-5 max-w-sm w-full border-2 border-rose-500 shadow-2xl space-y-3">
             <div className="flex items-center gap-2 text-rose-600">
               <AlertCircle className="w-5 h-5" />
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Konfirmasi Hapus Data Izin</h3>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">Konfirmasi Hapus Status Izin</h3>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              Apakah Anda yakin ingin menghapus data perizinan <strong>{deleteConfirm.staffName}</strong> pada tanggal{' '}
+              Apakah Anda yakin ingin menghapus status <strong>IZIN</strong> untuk{' '}
+              <strong>{deleteConfirm.staffName}</strong> pada tanggal{' '}
               <strong>{deleteConfirm.day} {schedule.monthName}</strong>?
+              <span className="block mt-1 text-[11px] text-slate-500">
+                (Kode pada matriks tanggal tersebut akan dikembalikan menjadi <strong>O / Libur</strong>).
+              </span>
             </p>
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 onClick={() => setDeleteConfirm(null)}
-                className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-xs font-semibold text-slate-700 dark:text-slate-300"
+                className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer"
               >
                 Batal
               </button>
               <button
                 onClick={() => handleDelete(deleteConfirm)}
-                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold"
+                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer"
               >
                 Ya, Hapus
               </button>

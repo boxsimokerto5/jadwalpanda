@@ -1365,7 +1365,7 @@ export default function App() {
               />
             )}
 
-            {currentTab === 'leave' && currentUserRole === 'admin' && (
+            {currentTab === 'leave' && (
               <LeaveManagementView
                 schedule={schedule}
                 setSchedule={setSchedule}

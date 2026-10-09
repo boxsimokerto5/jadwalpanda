@@ -3,16 +3,16 @@ import {
   FileText, 
   X, 
   Check, 
-  AlertCircle, 
   Calendar, 
   User, 
-  Building2, 
   HeartPulse, 
   Briefcase, 
   HelpCircle,
   Clock,
   RotateCcw,
-  Trash2
+  Trash2,
+  Link as LinkIcon,
+  ExternalLink
 } from 'lucide-react';
 import { Staff, LeaveType, LeavePermissionRecord } from '../types';
 import { soundManager } from '../utils/audio';
@@ -21,7 +21,7 @@ import {
   deleteLeaveRecord,
   getLocalLeaveRecords, 
   getLeaveRecordId,
-  getLeaveTypeLabel
+  normalizeDriveUrl
 } from '../utils/leaveService';
 
 interface LeaveAssignmentModalProps {
@@ -51,11 +51,15 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
 }) => {
   const [leaveType, setLeaveType] = useState<LeaveType>('sakit');
   const [notes, setNotes] = useState<string>('');
+  const [driveLink, setDriveLink] = useState<string>('');
+  const [docLabel, setDocLabel] = useState<string>('');
   const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
   const [existingRecord, setExistingRecord] = useState<LeavePermissionRecord | null>(null);
 
   useEffect(() => {
     if (isOpen) {
+      setConfirmDelete(false);
       const records = getLocalLeaveRecords(year, month);
       const recordId = getLeaveRecordId(year, month, day, staff.id);
       const found = records[recordId];
@@ -63,21 +67,37 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
         setExistingRecord(found);
         setLeaveType(found.leaveType);
         setNotes(found.notes || '');
+        setDriveLink(found.proofUrl || '');
+        setDocLabel(found.proofFileName || '');
       } else {
         setExistingRecord(null);
         setLeaveType('sakit');
         setNotes('');
+        setDriveLink('');
+        setDocLabel('');
       }
     }
   }, [isOpen, year, month, day, staff.id]);
 
   if (!isOpen) return null;
 
+  const normalizedUrl = normalizeDriveUrl(driveLink);
+
   const handleSave = async () => {
     setIsSaving(true);
     soundManager.playChime();
 
     const recordId = getLeaveRecordId(year, month, day, staff.id);
+    const cleanedLink = normalizeDriveUrl(driveLink);
+    const finalLabel = cleanedLink
+      ? docLabel.trim() ||
+        (leaveType === 'sakit'
+          ? 'Surat Keterangan Sakit (Google Drive)'
+          : leaveType === 'dinas'
+          ? 'Surat Tugas Dinas Luar (Google Drive)'
+          : 'Dokumen Bukti Izin (Google Drive)')
+      : undefined;
+
     const newRecord: LeavePermissionRecord = {
       id: recordId,
       staffId: staff.id,
@@ -87,12 +107,18 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
       year,
       leaveType,
       notes: notes.trim(),
-      proofUrl: existingRecord?.proofUrl,
-      proofFileName: existingRecord?.proofFileName,
-      proofUploadedAt: existingRecord?.proofUploadedAt,
-      proofUploadedBy: existingRecord?.proofUploadedBy,
+      proofUrl: cleanedLink || undefined,
+      proofFileName: finalLabel,
+      proofUploadedAt: cleanedLink
+        ? existingRecord?.proofUrl === cleanedLink && existingRecord?.proofUploadedAt
+          ? existingRecord.proofUploadedAt
+          : new Date().toISOString()
+        : undefined,
+      proofUploadedBy: cleanedLink
+        ? existingRecord?.proofUploadedBy || (userRole === 'admin' ? 'Administrator' : staff.name)
+        : undefined,
       createdAt: existingRecord?.createdAt || new Date().toISOString(),
-      createdBy: userRole === 'admin' ? 'Administrator' : 'Staff',
+      createdBy: userRole === 'admin' ? 'Administrator' : staff.name,
       updatedAt: new Date().toISOString(),
     };
 
@@ -103,9 +129,6 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
   };
 
   const handleDelete = async () => {
-    if (!window.confirm(`Hapus status perizinan untuk ${staff.name}?`)) {
-      return;
-    }
     setIsSaving(true);
     soundManager.playBell();
     await deleteLeaveRecord(year, month, day, staff.id);
@@ -116,7 +139,7 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-xs">
-      <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 sm:p-5 max-w-md w-full border-2 border-rose-500 shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
+      <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 sm:p-5 max-w-md w-full border-2 border-rose-500 shadow-2xl space-y-3.5 animate-in fade-in zoom-in-95 max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-rose-100 dark:border-rose-900/40">
           <div className="flex items-center gap-2.5">
@@ -129,17 +152,17 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
                   Formulir Perizinan Dinas (IZIN)
                 </span>
                 <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-rose-600 text-white">
-                  Admin
+                  {userRole === 'admin' ? 'Admin' : 'Wali Asuh'}
                 </span>
               </div>
               <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-white leading-tight">
-                Keterangan Izin Wali Asuh
+                Keterangan & Link Bukti Izin
               </h3>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -155,7 +178,7 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
               </span>
             </div>
             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-200 dark:bg-rose-900/70 text-rose-800 dark:text-rose-200">
-              {staff.role}
+              {staff.code ? `${staff.code} • ${staff.role}` : staff.role}
             </span>
           </div>
 
@@ -169,7 +192,7 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
                 <Clock className="w-3.5 h-3.5 text-rose-500" />
                 <span>Kode: <strong>IZIN</strong></span>
               </div>
-              {onOpenShiftSelector && (
+              {onOpenShiftSelector && userRole === 'admin' && (
                 <button
                   type="button"
                   onClick={() => {
@@ -187,15 +210,38 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
           </div>
         </div>
 
+        {/* Jika sudah ada Link Google Drive, tampilkan tombol langsung untuk rekan lainnya */}
+        {normalizedUrl && (
+          <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-[10px] font-black uppercase text-emerald-700 dark:text-emerald-300">
+                Tautan Bukti Tersedia
+              </div>
+              <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                {docLabel || existingRecord?.proofFileName || 'Dokumen Bukti Google Drive'}
+              </div>
+            </div>
+            <a
+              href={normalizedUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs shrink-0 transition-all"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>Buka Google Drive</span>
+            </a>
+          </div>
+        )}
+
         {/* Dropdown Pilihan Kategori Izin */}
         <div className="space-y-1.5">
           <label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1">
             <span>Kategori Izin:</span>
             <span className="text-rose-500">*</span>
           </label>
-          <div className="grid grid-cols-1 gap-2">
+          <div className="grid grid-cols-1 gap-1.5">
             <label 
-              className={`flex items-center gap-2.5 p-2.5 rounded-xl border cursor-pointer transition-all ${
+              className={`flex items-center gap-2.5 p-2 rounded-xl border cursor-pointer transition-all ${
                 leaveType === 'sakit'
                   ? 'border-rose-500 bg-rose-50/70 dark:bg-rose-950/50 ring-2 ring-rose-500/20'
                   : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 bg-white dark:bg-slate-800'
@@ -210,20 +256,20 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
                 className="text-rose-600 focus:ring-rose-500" 
               />
               <div className="flex items-center gap-2 flex-1">
-                <div className="w-7 h-7 rounded-lg bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300 flex items-center justify-center">
+                <div className="w-7 h-7 rounded-lg bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300 flex items-center justify-center shrink-0">
                   <HeartPulse className="w-4 h-4" />
                 </div>
                 <div>
                   <div className="text-xs font-bold text-slate-900 dark:text-white">Sakit</div>
                   <div className="text-[10px] text-slate-500 dark:text-slate-400">
-                    Memerlukan surat keterangan dokter / resep (tombol upload aktif di dashboard)
+                    Sakit dengan lampiran link Google Drive surat keterangan dokter / resep
                   </div>
                 </div>
               </div>
             </label>
 
             <label 
-              className={`flex items-center gap-2.5 p-2.5 rounded-xl border cursor-pointer transition-all ${
+              className={`flex items-center gap-2.5 p-2 rounded-xl border cursor-pointer transition-all ${
                 leaveType === 'dinas'
                   ? 'border-blue-500 bg-blue-50/70 dark:bg-blue-950/50 ring-2 ring-blue-500/20'
                   : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 bg-white dark:bg-slate-800'
@@ -238,20 +284,20 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
                 className="text-blue-600 focus:ring-blue-500" 
               />
               <div className="flex items-center gap-2 flex-1">
-                <div className="w-7 h-7 rounded-lg bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 flex items-center justify-center">
+                <div className="w-7 h-7 rounded-lg bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 flex items-center justify-center shrink-0">
                   <Briefcase className="w-4 h-4" />
                 </div>
                 <div>
                   <div className="text-xs font-bold text-slate-900 dark:text-white">Dinas Luar</div>
                   <div className="text-[10px] text-slate-500 dark:text-slate-400">
-                    Penugasan kedinasan di luar asrama (tombol upload surat tugas aktif di dashboard)
+                    Penugasan kedinasan di luar asrama (link Google Drive surat tugas)
                   </div>
                 </div>
               </div>
             </label>
 
             <label 
-              className={`flex items-center gap-2.5 p-2.5 rounded-xl border cursor-pointer transition-all ${
+              className={`flex items-center gap-2.5 p-2 rounded-xl border cursor-pointer transition-all ${
                 leaveType === 'keperluan_lain'
                   ? 'border-amber-500 bg-amber-50/70 dark:bg-amber-950/50 ring-2 ring-amber-500/20'
                   : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 bg-white dark:bg-slate-800'
@@ -266,7 +312,7 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
                 className="text-amber-600 focus:ring-amber-500" 
               />
               <div className="flex items-center gap-2 flex-1">
-                <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300 flex items-center justify-center">
+                <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
                   <HelpCircle className="w-4 h-4" />
                 </div>
                 <div>
@@ -280,10 +326,35 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
           </div>
         </div>
 
-        {/* Catatan Keterangan Ditambahi Oleh Admin */}
+        {/* Input Link Google Drive */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center justify-between">
+            <span className="flex items-center gap-1">
+              <LinkIcon className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Link Google Drive Bukti Surat:</span>
+            </span>
+            <span className="text-[10px] text-slate-400 font-normal">(opsional / bisa menyusul)</span>
+          </label>
+          <input
+            type="url"
+            value={driveLink}
+            onChange={(e) => setDriveLink(e.target.value)}
+            placeholder="https://drive.google.com/file/d/..."
+            className="w-full text-xs p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:outline-none font-mono"
+          />
+          <input
+            type="text"
+            value={docLabel}
+            onChange={(e) => setDocLabel(e.target.value)}
+            placeholder="Judul dokumen (contoh: Surat Dokter / Surat Tugas)"
+            className="w-full text-xs px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+          />
+        </div>
+
+        {/* Catatan Keterangan */}
         <div className="space-y-1">
           <label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center justify-between">
-            <span>Keterangan Tambahan Admin:</span>
+            <span>Keterangan / Catatan Alasan:</span>
             <span className="text-[10px] text-slate-400 font-normal">(opsional)</span>
           </label>
           <textarea
@@ -295,30 +366,34 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
           />
         </div>
 
-        {/* Existing Proof status hint */}
-        {existingRecord?.proofUrl && (
-          <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 text-[11px] flex items-center gap-2">
-            <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>Bukti dokumen sudah diunggah oleh staf: <strong>{existingRecord.proofFileName || 'Foto Bukti'}</strong></span>
-          </div>
-        )}
-
         {/* Footer Actions */}
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-1.5">
-            {existingRecord && (
-              <button
-                type="button"
-                onClick={handleDelete}
-                disabled={isSaving}
-                className="px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-600 hover:bg-rose-50 hover:text-rose-600 text-slate-600 dark:text-slate-300 text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
-                title="Hapus data izin dari sistem"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                <span>Hapus Izin</span>
-              </button>
+            {existingRecord && userRole === 'admin' && (
+              confirmDelete ? (
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={isSaving}
+                  className="px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Ya, Reset</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(true)}
+                  disabled={isSaving}
+                  className="px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-600 hover:bg-rose-50 hover:text-rose-600 text-slate-600 dark:text-slate-300 text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                  title="Reset rincian izin ini"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                  <span>Reset</span>
+                </button>
+              )
             )}
-            {onOpenShiftSelector && (
+            {onOpenShiftSelector && userRole === 'admin' && (
               <button
                 type="button"
                 onClick={() => {
@@ -329,7 +404,7 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
                 title="Buka pilihan semua kode shif"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Ganti Kode Shif</span>
+                <span>Ganti Shif</span>
               </button>
             )}
           </div>
@@ -340,7 +415,7 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
               onClick={onClose}
               className="px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
             >
-              Batal
+              Tutup
             </button>
             <button
               type="button"
@@ -349,7 +424,7 @@ export const LeaveAssignmentModal: React.FC<LeaveAssignmentModalProps> = ({
               className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center gap-1.5"
             >
               <Check className="w-4 h-4" />
-              <span>{isSaving ? 'Menyimpan...' : 'Simpan Izin'}</span>
+              <span>{isSaving ? 'Menyimpan...' : 'Simpan Data Izin'}</span>
             </button>
           </div>
         </div>

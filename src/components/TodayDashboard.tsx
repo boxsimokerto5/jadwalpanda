@@ -35,7 +35,9 @@ import {
   Check,
   Eye,
   Building2,
-  MapPin
+  MapPin,
+  ExternalLink,
+  Link as LinkIcon
 } from 'lucide-react';
 import { MonthSchedule, Staff, ShiftCode, DailyTask, AnnouncementData, StudentMedicalPlan, P5TaskAssignment, MorningPostAssignment, MedicalGuardCustomOption } from '../types';
 import { SHIFT_DEFINITIONS, SHIFT_TASKS_TEMPLATE } from '../data/initialSchedule';
@@ -72,7 +74,7 @@ import {
 import { MorningPostAssignmentModal } from './MorningPostAssignmentModal';
 import { LeaveProofUploadModal } from './LeaveProofUploadModal';
 import { LeaveAssignmentModal } from './LeaveAssignmentModal';
-import { getLocalLeaveRecords, subscribeToLeaveRecords } from '../utils/leaveService';
+import { getLocalLeaveRecords, subscribeToLeaveRecords, normalizeDriveUrl } from '../utils/leaveService';
 import { AnnouncementPopup } from './AnnouncementPopup';
 import { IcsExportModal } from './IcsExportModal';
 import { getCurrentTwoHourTheme, TwoHourTheme } from '../utils/themeTwoHour';
@@ -85,7 +87,7 @@ interface TodayDashboardProps {
   selectedStaffId: number;
   activeDay: number;
   setActiveDay: (day: number) => void;
-  onNavigateToTab: (tab: 'matrix' | 'personal' | 'admin' | 'auto' | 'notifications' | 'print' | 'handover' | 'sop' | 'medical' | 'assignment' | 'codeguide') => void;
+  onNavigateToTab: (tab: 'matrix' | 'personal' | 'admin' | 'leave' | 'auto' | 'notifications' | 'print' | 'handover' | 'sop' | 'medical' | 'assignment' | 'codeguide') => void;
   sopTasks?: DailyTask[];
   userRole?: 'admin' | 'staff';
   medicalPlans?: StudentMedicalPlan[];
@@ -158,14 +160,13 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
     getLocalLeaveRecords(schedule.year, schedule.month)
   );
   const [isLeaveUploadModalOpen, setIsLeaveUploadModalOpen] = useState<boolean>(false);
+  const [colleagueUploadTarget, setColleagueUploadTarget] = useState<{
+    staff: Staff;
+    day: number;
+    record?: LeavePermissionRecord | null;
+  } | null>(null);
   const [adminLeaveModalTarget, setAdminLeaveModalTarget] = useState<{ day: number; staff: Staff } | null>(null);
   const [activeMorningStaffId, setActiveMorningStaffId] = useState<number | null>(null);
-  const [proofPreviewTarget, setProofPreviewTarget] = useState<{
-    staffName: string;
-    leaveType: string;
-    proofUrl: string;
-    proofFileName?: string;
-  } | null>(null);
 
   // Daftar rekan satu tim yang sedang berstatus izin pada hari ini (activeDay)
   const todayPermittedStaff = useMemo(() => {
@@ -742,7 +743,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
               </div>
             </div>
 
-            {/* List Petugas Izin (Badge Nama, Status Izin & Tombol Unduh Surat) */}
+            {/* List Petugas Izin (Badge Nama, Status Izin & Tombol Link Google Drive) */}
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               {todayPermittedStaff.map(({ staff, record }) => {
                 const leaveTypeLabel = record?.leaveType === 'sakit' 
@@ -753,7 +754,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                   ? 'Keperluan Lain'
                   : 'Izin';
                 
-                const hasProof = Boolean(record?.proofUrl);
+                const driveUrl = normalizeDriveUrl(record?.proofUrl);
 
                 return (
                   <div
@@ -773,29 +774,47 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                       {leaveTypeLabel}
                     </span>
 
-                    {hasProof ? (
+                    {driveUrl ? (
+                      <a
+                        href={driveUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] shadow-2xs transition-colors cursor-pointer"
+                        title={`Klik untuk membuka link Google Drive surat bukti izin ${staff.name}`}
+                      >
+                        <ExternalLink className="w-2.5 h-2.5" />
+                        <span>Buka Link Drive</span>
+                      </a>
+                    ) : (
                       <button
                         type="button"
-                        onClick={() => setProofPreviewTarget({
-                          staffName: staff.name,
-                          leaveType: leaveTypeLabel,
-                          proofUrl: record!.proofUrl!,
-                          proofFileName: record?.proofFileName
-                        })}
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] shadow-2xs transition-colors cursor-pointer"
-                        title={`Lihat & unduh surat bukti perizinan ${staff.name}`}
+                        onClick={() =>
+                          setColleagueUploadTarget({
+                            staff,
+                            day: activeDay,
+                            record,
+                          })
+                        }
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 hover:bg-blue-50 dark:bg-slate-800 dark:hover:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-slate-200 dark:border-slate-700 font-semibold text-[9.5px] transition-colors cursor-pointer"
+                        title={`Cantumkan link Google Drive bukti izin untuk ${staff.name}`}
                       >
-                        <Download className="w-2.5 h-2.5" />
-                        <span>Unduh Surat</span>
+                        <LinkIcon className="w-2.5 h-2.5" />
+                        <span>+ Link Drive</span>
                       </button>
-                    ) : (
-                      <span className="text-[9.5px] text-slate-400 italic">
-                        (Belum upload)
-                      </span>
                     )}
                   </div>
                 );
               })}
+
+              <button
+                type="button"
+                onClick={() => onNavigateToTab('leave')}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] shadow-2xs transition-colors cursor-pointer"
+                title="Buka halaman Rekapitulasi Izin, Sakit & Dinas"
+              >
+                <FileText className="w-2.5 h-2.5" />
+                <span>Rekap Izin</span>
+              </button>
             </div>
           </div>
         </div>
@@ -875,20 +894,34 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                   <span>Atur Izin</span>
                 </button>
               )}
-              {userTodayShift === 'IZIN' && (currentLeaveRecord?.leaveType === 'sakit' || currentLeaveRecord?.leaveType === 'dinas' || !currentLeaveRecord) && (
-                <button
-                  type="button"
-                  onClick={() => setIsLeaveUploadModalOpen(true)}
-                  className={`px-2.5 py-0.5 rounded text-[10.5px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all ${
-                    currentLeaveRecord?.proofUrl
-                      ? 'bg-emerald-500 hover:bg-emerald-400 text-white'
-                      : 'bg-amber-400 hover:bg-amber-300 text-slate-950 font-black ring-1 ring-white/50'
-                  }`}
-                  title={currentLeaveRecord?.proofUrl ? 'Bukti surat sudah diunggah. Klik untuk melihat / ganti.' : 'Wajib unggah foto surat sakit / surat dinas (JPG/PNG)'}
-                >
-                  <Upload className="w-3 h-3" />
-                  <span>{currentLeaveRecord?.proofUrl ? '✓ Bukti Terunggah' : 'Upload Bukti (JPG/PNG)'}</span>
-                </button>
+              {userTodayShift === 'IZIN' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setIsLeaveUploadModalOpen(true)}
+                    className={`px-2.5 py-0.5 rounded text-[10.5px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all ${
+                      currentLeaveRecord?.proofUrl
+                        ? 'bg-white/25 hover:bg-white/35 text-white border border-white/30'
+                        : 'bg-amber-400 hover:bg-amber-300 text-slate-950 font-black ring-1 ring-white/50'
+                    }`}
+                    title={currentLeaveRecord?.proofUrl ? 'Klik untuk mengubah link Google Drive surat bukti izin' : 'Cantumkan link Google Drive surat sakit / surat tugas dinas'}
+                  >
+                    <LinkIcon className="w-3 h-3" />
+                    <span>{currentLeaveRecord?.proofUrl ? 'Edit Link Drive' : 'Cantumkan Link Google Drive'}</span>
+                  </button>
+                  {currentLeaveRecord?.proofUrl && (
+                    <a
+                      href={normalizeDriveUrl(currentLeaveRecord.proofUrl)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-0.5 rounded text-[10.5px] font-bold bg-emerald-500 hover:bg-emerald-400 text-white flex items-center gap-1 shadow-xs transition-all cursor-pointer"
+                      title="Buka link Google Drive bukti surat izin"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>Buka Link Google Drive</span>
+                    </a>
+                  )}
+                </>
               )}
             </div>
             <p className="text-[11.5px] sm:text-xs text-white/95 max-w-3xl leading-snug drop-shadow-xs font-normal">
@@ -940,11 +973,9 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
                 </span>
               ) : userTodayShift === 'IZIN' ? (
                 <span>
-                  Kategori Perizinan: <strong className="uppercase">{currentLeaveRecord?.leaveType === 'sakit' ? 'Sakit' : currentLeaveRecord?.leaveType === 'dinas' ? 'Dinas Luar' : currentLeaveRecord?.leaveType === 'keperluan_lain' ? 'Keperluan Lain' : 'Belum Ditentukan'}</strong>
-                  {currentLeaveRecord?.notes ? ` • Catatan Admin: "${currentLeaveRecord.notes}"` : ''}.
-                  {currentLeaveRecord?.leaveType === 'sakit' || currentLeaveRecord?.leaveType === 'dinas' ? (
-                    currentLeaveRecord?.proofUrl ? ' [Bukti foto surat telah tersimpan di sistem]' : ' [Silakan klik tombol Upload Bukti di atas untuk melampirkan surat]'
-                  ) : ''}
+                  Kategori Perizinan: <strong className="uppercase">{currentLeaveRecord?.leaveType === 'sakit' ? 'Sakit' : currentLeaveRecord?.leaveType === 'dinas' ? 'Dinas Luar' : currentLeaveRecord?.leaveType === 'keperluan_lain' ? 'Keperluan Lain' : 'Izin Terjadwal'}</strong>
+                  {currentLeaveRecord?.notes ? ` • Catatan: "${currentLeaveRecord.notes}"` : ''}.
+                  {currentLeaveRecord?.proofUrl ? ' [Tautan Google Drive surat bukti telah tersimpan]' : ' [Silakan klik tombol Cantumkan Link Google Drive di atas untuk melampirkan tautan bukti]'}
                 </span>
               ) : (
                 <span>
@@ -2438,7 +2469,7 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
         />
       )}
 
-      {/* Pop-up Upload Bukti Foto Surat Perizinan (Sakit / Dinas) untuk Petugas */}
+      {/* Pop-up Input Link Google Drive Surat Perizinan (Sakit / Dinas / Izin) untuk Petugas */}
       {isLeaveUploadModalOpen && (
         <LeaveProofUploadModal
           isOpen={isLeaveUploadModalOpen}
@@ -2451,7 +2482,25 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
           record={currentLeaveRecord}
           onUploaded={() => {
             setLeaveRecords(getLocalLeaveRecords(schedule.year, schedule.month));
-            showToast('Bukti foto surat perizinan berhasil diunggah & tersimpan!');
+            showToast('Link Google Drive bukti surat perizinan berhasil disimpan!');
+          }}
+        />
+      )}
+
+      {/* Pop-up Input Link Google Drive dari Banner Rekan Izin Hari Ini */}
+      {colleagueUploadTarget && (
+        <LeaveProofUploadModal
+          isOpen={!!colleagueUploadTarget}
+          onClose={() => setColleagueUploadTarget(null)}
+          staff={colleagueUploadTarget.staff}
+          day={colleagueUploadTarget.day}
+          month={schedule.month}
+          year={schedule.year}
+          monthName={schedule.monthName}
+          record={colleagueUploadTarget.record}
+          onUploaded={() => {
+            setLeaveRecords(getLocalLeaveRecords(schedule.year, schedule.month));
+            showToast(`Link Google Drive bukti izin ${colleagueUploadTarget.staff.name} berhasil disimpan!`);
           }}
         />
       )}
@@ -2472,59 +2521,6 @@ export const TodayDashboard: React.FC<TodayDashboardProps> = ({
             showToast('Keterangan perizinan staf berhasil diperbarui.');
           }}
         />
-      )}
-
-      {/* Pop-up Pratinjau & Unduh Surat Bukti Izin Rekan (Dapat Dilihat Seluruh Rekan Tim) */}
-      {proofPreviewTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl p-3.5 sm:p-4.5 max-w-lg w-full border border-slate-200 dark:border-slate-800 shadow-2xl space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-200/80 dark:border-slate-800 pb-2">
-              <div className="flex items-center gap-2">
-                <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                  <FileText className="w-4 h-4" />
-                </span>
-                <div>
-                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
-                    Surat Bukti Izin: {proofPreviewTarget.staffName}
-                  </h3>
-                  <p className="text-[10.5px] text-slate-500 dark:text-slate-400">
-                    Kategori: <strong className="text-slate-700 dark:text-slate-300">{proofPreviewTarget.leaveType}</strong>
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setProofPreviewTarget(null)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
-                title="Tutup"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="rounded-xl overflow-hidden bg-slate-950/5 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800 flex items-center justify-center max-h-[60vh] p-1">
-              <img
-                src={proofPreviewTarget.proofUrl}
-                alt={`Surat Izin ${proofPreviewTarget.staffName}`}
-                className="max-h-[58vh] w-auto object-contain rounded-lg shadow-xs"
-              />
-            </div>
-
-            <div className="flex items-center justify-between text-xs pt-0.5">
-              <span className="text-slate-500 dark:text-slate-400 truncate max-w-[200px] text-[10.5px]">
-                {proofPreviewTarget.proofFileName || `surat_${proofPreviewTarget.staffName}.jpg`}
-              </span>
-              <a
-                href={proofPreviewTarget.proofUrl}
-                download={proofPreviewTarget.proofFileName || `surat_izin_${proofPreviewTarget.staffName.replace(/\s+/g, '_')}.jpg`}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] shadow-xs transition-colors cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Unduh File Surat</span>
-              </a>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );
