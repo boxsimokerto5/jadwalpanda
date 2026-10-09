@@ -57,7 +57,9 @@ import {
   saveScheduleToSupabase, 
   fetchScheduleFromSupabase,
   subscribeToSupabaseSchedule,
-  initSupabaseGlobalSync
+  initSupabaseGlobalSync,
+  isScheduleSaveInProgress,
+  getLatestLocalScheduleTimestamp
 } from './utils/supabaseService';
 import { AnimatePresence } from 'motion/react';
 import { RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
@@ -130,17 +132,19 @@ function getInitialScheduleForMonth(year: number, month: number): MonthSchedule 
   try {
     const savedV16 = localStorage.getItem(`wali_asuh_schedule_v16_${year}_${month}`);
     const savedV15 = localStorage.getItem(`wali_asuh_schedule_v15_${year}_${month}`);
-    const saved = savedV16 || savedV15;
+    const savedV14 = localStorage.getItem(`wali_asuh_schedule_v14_${year}_${month}`);
+    const saved = savedV16 || savedV15 || savedV14;
     if (saved) {
       const parsed = JSON.parse(saved);
       if (parsed.staffList && parsed.staffList.length > 0 && parsed.days) {
         if (
           !savedV16 &&
+          !parsed.updatedAt &&
           year === 2026 &&
           month === 10 &&
           parsed.staffList.length === SEPTEMBER_2026_STAFF_LIST.length
         ) {
-          // Stale v15 cache detected, continue to official baseline below
+          // Unmodified legacy cache without timestamp detected, continue to official baseline below
         } else {
           parsed.year = year;
           parsed.month = month;
@@ -559,17 +563,15 @@ export default function App() {
       (cloudData) => {
         if (cloudData && cloudData.days && Object.keys(cloudData.days).length > 0) {
           setSchedule((prev) => {
-            // CRITICAL INPUT PROTECTION:
-            // ONLY Admin on their own device may check localTime > cloudTime when actively editing.
-            // Wali Asuh page is STRICTLY READ-ONLY and MUST ALWAYS accept the live server data immediately!
-            if (currentUserRoleRef.current === 'admin') {
-              if (prev.updatedAt && cloudData.updatedAt) {
-                const localTime = new Date(prev.updatedAt).getTime();
-                const cloudTime = new Date(cloudData.updatedAt).getTime();
-                // If admin local edit is newer than server snapshot, keep admin local edit
-                if (localTime > cloudTime) {
-                  return prev;
-                }
+            // Never overwrite a newer local schedule edit with an older cloud snapshot
+            const localSavedMs = getLatestLocalScheduleTimestamp(selectedMonth.year, selectedMonth.month);
+            const prevMs = prev.updatedAt ? new Date(prev.updatedAt).getTime() : 0;
+            const effectiveLocalMs = Math.max(localSavedMs, isNaN(prevMs) ? 0 : prevMs);
+
+            if (effectiveLocalMs > 0 && cloudData.updatedAt) {
+              const cloudTime = new Date(cloudData.updatedAt).getTime();
+              if (!isNaN(cloudTime) && effectiveLocalMs > cloudTime) {
+                return prev;
               }
             }
 
@@ -609,8 +611,11 @@ export default function App() {
             };
 
             try {
-              localStorage.setItem(`wali_asuh_schedule_v16_${selectedMonth.year}_${selectedMonth.month}`, JSON.stringify(updatedSchedule));
-              localStorage.setItem(`wali_asuh_schedule_v15_${selectedMonth.year}_${selectedMonth.month}`, JSON.stringify(updatedSchedule));
+              const serialized = JSON.stringify(updatedSchedule);
+              localStorage.setItem(`wali_asuh_schedule_v16_${selectedMonth.year}_${selectedMonth.month}`, serialized);
+              localStorage.setItem(`wali_asuh_schedule_v15_${selectedMonth.year}_${selectedMonth.month}`, serialized);
+              localStorage.setItem(`wali_asuh_schedule_v14_${selectedMonth.year}_${selectedMonth.month}`, serialized);
+              localStorage.setItem(`wali_asuh_schedule_v13_${selectedMonth.year}_${selectedMonth.month}`, serialized);
             } catch {}
 
             return updatedSchedule;
@@ -618,23 +623,7 @@ export default function App() {
           setCloudStatus('connected');
           isCloudSyncedRef.current = true;
         } else {
-          // If cloud table has no data yet, write baseline once
-          saveScheduleToSupabase(schedule, 'Inisialisasi Database')
-            .then((ok) => {
-              if (ok) {
-                setCloudStatus('connected');
-                isCloudSyncedRef.current = true;
-                lastSyncedScheduleHashRef.current = JSON.stringify({
-                  days: schedule.days,
-                  staffList: (schedule.staffList || []).map((s) => s.id)
-                });
-              } else {
-                setCloudStatus('connected');
-              }
-            })
-            .catch(() => {
-              setCloudStatus('connected');
-            });
+          setCloudStatus('connected');
         }
       }
     );
@@ -650,16 +639,29 @@ export default function App() {
   useEffect(() => {
     const handleVisibilityOrFocus = async () => {
       if (document.visibilityState === 'visible') {
+        if (isScheduleSaveInProgress()) {
+          return;
+        }
         try {
           fetchMorningPostAssignmentsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => {});
           const freshSupabase = await fetchScheduleFromSupabase(selectedMonth.year, selectedMonth.month);
+          if (isScheduleSaveInProgress()) {
+            return;
+          }
           if (freshSupabase && freshSupabase.days && Object.keys(freshSupabase.days).length > 0) {
             setSchedule((prev) => {
-              if (currentUserRoleRef.current === 'admin' && prev.updatedAt && freshSupabase.updatedAt) {
-                if (new Date(prev.updatedAt).getTime() > new Date(freshSupabase.updatedAt).getTime()) {
+              const localSavedMs = getLatestLocalScheduleTimestamp(selectedMonth.year, selectedMonth.month);
+              const prevMs = prev.updatedAt ? new Date(prev.updatedAt).getTime() : 0;
+              const effectiveLocalMs = Math.max(localSavedMs, isNaN(prevMs) ? 0 : prevMs);
+
+              if (effectiveLocalMs > 0 && freshSupabase.updatedAt) {
+                const cloudTime = new Date(freshSupabase.updatedAt).getTime();
+                if (!isNaN(cloudTime) && effectiveLocalMs > cloudTime) {
                   return prev;
                 }
               }
+
+              isIncomingRemoteUpdateRef.current = true;
               const currentStaff =
                 freshSupabase.staffList && freshSupabase.staffList.length > 0
                   ? freshSupabase.staffList
@@ -674,7 +676,13 @@ export default function App() {
               const targetMonth = freshSupabase.month || selectedMonth.month;
               const canonicalMonthName = INDONESIAN_MONTH_NAMES[targetMonth - 1] || 'Oktober';
               const canonicalTotalDays = new Date(targetYear, targetMonth, 0).getDate() || prev.totalDays || 31;
-              return {
+
+              lastSyncedScheduleHashRef.current = JSON.stringify({
+                days: resolvedDays,
+                staffList: currentStaff.map((s) => s.id)
+              });
+
+              const updatedSchedule: MonthSchedule = {
                 ...prev,
                 year: targetYear,
                 month: targetMonth,
@@ -685,6 +693,16 @@ export default function App() {
                 updatedAt: freshSupabase.updatedAt || new Date().toISOString(),
                 updatedBy: freshSupabase.updatedBy || 'Supabase Server',
               };
+
+              try {
+                const serialized = JSON.stringify(updatedSchedule);
+                localStorage.setItem(`wali_asuh_schedule_v16_${targetYear}_${targetMonth}`, serialized);
+                localStorage.setItem(`wali_asuh_schedule_v15_${targetYear}_${targetMonth}`, serialized);
+                localStorage.setItem(`wali_asuh_schedule_v14_${targetYear}_${targetMonth}`, serialized);
+                localStorage.setItem(`wali_asuh_schedule_v13_${targetYear}_${targetMonth}`, serialized);
+              } catch {}
+
+              return updatedSchedule;
             });
             setCloudStatus('connected');
           }
@@ -990,23 +1008,19 @@ export default function App() {
         };
         setSchedule(updatedSched);
         try {
-          localStorage.setItem(
-            `wali_asuh_schedule_v16_${supabaseData.year}_${supabaseData.month}`,
-            JSON.stringify(updatedSched)
-          );
-          localStorage.setItem(
-            `wali_asuh_schedule_v15_${supabaseData.year}_${supabaseData.month}`,
-            JSON.stringify(updatedSched)
-          );
+          const serialized = JSON.stringify(updatedSched);
+          localStorage.setItem(`wali_asuh_schedule_v16_${supabaseData.year}_${supabaseData.month}`, serialized);
+          localStorage.setItem(`wali_asuh_schedule_v15_${supabaseData.year}_${supabaseData.month}`, serialized);
+          localStorage.setItem(`wali_asuh_schedule_v14_${supabaseData.year}_${supabaseData.month}`, serialized);
+          localStorage.setItem(`wali_asuh_schedule_v13_${supabaseData.year}_${supabaseData.month}`, serialized);
         } catch {}
         setCloudStatus('connected');
         soundManager.playChime();
         setRefreshToast({ message: 'Data terbaru berhasil disinkronkan dari Supabase Cloud!', type: 'success' });
       } else {
-        await saveScheduleToSupabase(schedule, 'Inisialisasi Sinkronisasi');
         setCloudStatus('connected');
         soundManager.playChime();
-        setRefreshToast({ message: 'Database Supabase Cloud sinkron.', type: 'success' });
+        setRefreshToast({ message: 'Jadwal terbaru perangkat aktif dan siap digunakan.', type: 'info' });
       }
 
       // Also refresh SOP checklist tasks from Supabase

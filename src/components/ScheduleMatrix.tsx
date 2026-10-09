@@ -300,8 +300,10 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
     } else {
       setSchedule(stampedSched);
       try {
-        localStorage.setItem(`wali_asuh_schedule_v15_${stampedSched.year}_${stampedSched.month}`, JSON.stringify(stampedSched));
-        localStorage.setItem(`wali_asuh_schedule_v14_${stampedSched.year}_${stampedSched.month}`, JSON.stringify(stampedSched));
+        const serialized = JSON.stringify(stampedSched);
+        localStorage.setItem(`wali_asuh_schedule_v16_${stampedSched.year}_${stampedSched.month}`, serialized);
+        localStorage.setItem(`wali_asuh_schedule_v15_${stampedSched.year}_${stampedSched.month}`, serialized);
+        localStorage.setItem(`wali_asuh_schedule_v14_${stampedSched.year}_${stampedSched.month}`, serialized);
       } catch {}
       saveScheduleToSupabase(stampedSched, 'Administrator SRT 1 (Import CSV)').catch(console.error);
     }

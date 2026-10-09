@@ -911,12 +911,39 @@ function getBaselineStaffForMonth(year: number, month: number): Staff[] {
   return OCTOBER_2026_STAFF_LIST;
 }
 
+// In-flight save lock & recent local snapshot tracker to prevent polling/focus race conditions
+let activeScheduleSaveCount = 0;
+let lastScheduleSaveFinishedAt = 0;
+const latestLocalScheduleByMonth: Record<
+  string,
+  { schedule: MonthSchedule; savedAt: number; payloadHash: string }
+> = {};
+
+export function isScheduleSaveInProgress(): boolean {
+  return activeScheduleSaveCount > 0 || Date.now() - lastScheduleSaveFinishedAt < 4500;
+}
+
+export function getLatestLocalScheduleTimestamp(year: number, month: number): number {
+  const entry = latestLocalScheduleByMonth[`${year}_${month}`];
+  if (!entry) return 0;
+  const isoTime = entry.schedule.updatedAt ? new Date(entry.schedule.updatedAt).getTime() : 0;
+  return Math.max(isoTime || 0, entry.savedAt);
+}
+
 /**
  * Fetch schedule from Supabase
  */
 export async function fetchScheduleFromSupabase(year: number, month: number): Promise<MonthSchedule | null> {
+  const monthKey = `${year}_${month}`;
+  const recentLocal = latestLocalScheduleByMonth[monthKey];
+
+  // If a save is actively in progress (or in cooldown) for this month, return the latest local snapshot immediately
+  if (recentLocal && isScheduleSaveInProgress()) {
+    return recentLocal.schedule;
+  }
+
   const client = getSupabaseClient();
-  if (!client) return null;
+  if (!client) return recentLocal ? recentLocal.schedule : null;
   try {
     const scheduleId = `schedule_${year}_${String(month).padStart(2, '0')}`;
     const { data: schedData, error } = await client
@@ -925,7 +952,18 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
       .eq('id', scheduleId)
       .maybeSingle();
 
-    if (error || !schedData) return null;
+    if (error || !schedData) {
+      return recentLocal ? recentLocal.schedule : null;
+    }
+
+    // Protect against stale server reads if local session recently saved a newer version
+    if (recentLocal && recentLocal.schedule.updatedAt && schedData.updated_at) {
+      const localMs = new Date(recentLocal.schedule.updatedAt).getTime();
+      const serverMs = new Date(schedData.updated_at).getTime();
+      if (!isNaN(localMs) && !isNaN(serverMs) && localMs > serverMs) {
+        return recentLocal.schedule;
+      }
+    }
 
     let staffList: Staff[] | undefined = undefined;
     let hasExplicitMonthStaff = false;
@@ -1013,7 +1051,7 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
     };
   } catch (err) {
     console.warn('Failed to fetch schedule from Supabase:', err);
-    return null;
+    return recentLocal ? recentLocal.schedule : null;
   }
 }
 
@@ -1021,61 +1059,63 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
  * Save schedule to Supabase (both header days_json, staff roster, and relational schedule_assignments)
  */
 export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy: string = 'User'): Promise<boolean> {
-  // Always persist to localStorage (v16, v15, v14) so local & multi-tab state is 100% consistent
-  const nowIso = schedule.updatedAt || new Date().toISOString();
+  const monthKey = `${schedule.year}_${schedule.month}`;
+  const activeRoster =
+    schedule.staffList && schedule.staffList.length > 0
+      ? schedule.staffList
+      : getBaselineStaffForMonth(schedule.year, schedule.month);
+
+  const payloadHash = JSON.stringify({
+    days: schedule.days,
+    staffSig: activeRoster.map((s) => `${s.id}:${s.name}:${s.code || ''}:${s.gender || ''}`).join('|'),
+  });
+
+  // Ensure monotonic timestamp that is always strictly newer than any previous local timestamp
+  const prevTimestamp = getLatestLocalScheduleTimestamp(schedule.year, schedule.month);
+  const candidateMs = schedule.updatedAt ? new Date(schedule.updatedAt).getTime() : Date.now();
+  const safeMs = Math.max(Date.now(), isNaN(candidateMs) ? 0 : candidateMs, prevTimestamp + 1);
+  const nowIso = new Date(safeMs).toISOString();
+
   const scheduleWithMeta: MonthSchedule = {
     ...schedule,
+    staffList: activeRoster,
     updatedAt: nowIso,
     updatedBy,
   };
+
+  // Always persist to all localStorage versions (v16, v15, v14, v13) so local & multi-tab state is 100% consistent
   try {
     const serialized = JSON.stringify(scheduleWithMeta);
     localStorage.setItem(`wali_asuh_schedule_v16_${schedule.year}_${schedule.month}`, serialized);
     localStorage.setItem(`wali_asuh_schedule_v15_${schedule.year}_${schedule.month}`, serialized);
     localStorage.setItem(`wali_asuh_schedule_v14_${schedule.year}_${schedule.month}`, serialized);
+    localStorage.setItem(`wali_asuh_schedule_v13_${schedule.year}_${schedule.month}`, serialized);
   } catch {}
+
+  // Deduplicate identical back-to-back saves (e.g. direct component save + App useEffect save within 3s)
+  const existingEntry = latestLocalScheduleByMonth[monthKey];
+  if (
+    existingEntry &&
+    existingEntry.payloadHash === payloadHash &&
+    Date.now() - existingEntry.savedAt < 3000
+  ) {
+    return true;
+  }
+
+  latestLocalScheduleByMonth[monthKey] = {
+    schedule: scheduleWithMeta,
+    savedAt: Date.now(),
+    payloadHash,
+  };
 
   const client = getSupabaseClient();
   if (!client) return false;
+
+  activeScheduleSaveCount++;
   try {
     const scheduleId = `schedule_${schedule.year}_${String(schedule.month).padStart(2, '0')}`;
 
-    // 1. Upsert staff records first so foreign key constraints on schedule_assignments never fail
-    const activeRoster =
-      schedule.staffList && schedule.staffList.length > 0
-        ? schedule.staffList
-        : getBaselineStaffForMonth(schedule.year, schedule.month);
-
-    if (activeRoster.length > 0) {
-      const staffRecords = activeRoster.map((s) => ({
-        id: s.id,
-        code: s.code || '',
-        name: s.name,
-        gender: s.gender === 'P' ? 'P' : 'L',
-        jenjang: s.jenjang || '-',
-        role: s.role || 'Wali Asuh',
-        group_name: s.group || '',
-        initials: s.initials || '',
-        phone: s.phone || '',
-        nip: s.nip || '',
-        is_active: s.status !== 'archived',
-      }));
-      try {
-        await client.from('staff').upsert(staffRecords, { onConflict: 'id' });
-      } catch (staffErr) {
-        console.warn('Supabase staff pre-upsert notice:', staffErr);
-      }
-
-      try {
-        await client.from('system_settings').upsert({
-          key: `schedule_staff_${schedule.year}_${schedule.month}`,
-          value_json: { staffList: activeRoster, updatedAt: nowIso, updatedBy },
-          updated_at: nowIso,
-        });
-      } catch {}
-    }
-
-    // 2. Upsert master schedule
+    // 1. Upsert master schedule (`schedules`) FIRST so `days_json` and `updated_at` are immediately updated on server
     const { error: schedErr } = await client.from('schedules').upsert(
       {
         id: scheduleId,
@@ -1092,7 +1132,37 @@ export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy:
       console.warn('Supabase schedule upsert notice:', schedErr.message);
     }
 
-    // 3. Upsert relational assignments
+    // 2. Upsert month-specific staff roster in system_settings & master staff records
+    if (activeRoster.length > 0) {
+      try {
+        await client.from('system_settings').upsert({
+          key: `schedule_staff_${schedule.year}_${schedule.month}`,
+          value_json: { staffList: activeRoster, updatedAt: nowIso, updatedBy },
+          updated_at: nowIso,
+        });
+      } catch {}
+
+      const staffRecords = activeRoster.map((s) => ({
+        id: s.id,
+        code: s.code || '',
+        name: s.name,
+        gender: s.gender === 'P' ? 'P' : 'L',
+        jenjang: s.jenjang || '-',
+        role: s.role || 'Wali Asuh',
+        group_name: s.group || '',
+        initials: s.initials || '',
+        phone: s.phone || '',
+        nip: s.nip || '',
+        is_active: s.status !== 'archived',
+      }));
+      try {
+        await client.from('staff').upsert(staffRecords, { onConflict: 'id' });
+      } catch (staffErr) {
+        console.warn('Supabase staff upsert notice:', staffErr);
+      }
+    }
+
+    // 3. Upsert relational assignments in parallel chunks
     const validStaffIds = new Set(activeRoster.map((s) => s.id));
     const assignmentRecords: any[] = [];
     for (let day = 1; day <= schedule.totalDays; day++) {
@@ -1116,22 +1186,31 @@ export async function saveScheduleToSupabase(schedule: MonthSchedule, updatedBy:
     }
 
     if (assignmentRecords.length > 0) {
-      const chunkSize = 250;
+      const chunkSize = 500;
+      const chunkPromises: PromiseLike<any>[] = [];
       for (let i = 0; i < assignmentRecords.length; i += chunkSize) {
         const chunk = assignmentRecords.slice(i, i + chunkSize);
-        const { error: assignErr } = await client
-          .from('schedule_assignments')
-          .upsert(chunk, { onConflict: 'year,month,day,staff_id' });
-        if (assignErr) {
-          console.warn('Supabase assignment upsert notice:', assignErr.message);
-        }
+        chunkPromises.push(
+          client
+            .from('schedule_assignments')
+            .upsert(chunk, { onConflict: 'year,month,day,staff_id' })
+            .then(({ error: assignErr }) => {
+              if (assignErr) {
+                console.warn('Supabase assignment upsert notice:', assignErr.message);
+              }
+            })
+        );
       }
+      await Promise.all(chunkPromises);
     }
 
     return !schedErr;
   } catch (err) {
     console.warn('Failed to save schedule to Supabase:', err);
     return false;
+  } finally {
+    activeScheduleSaveCount = Math.max(0, activeScheduleSaveCount - 1);
+    lastScheduleSaveFinishedAt = Date.now();
   }
 }
 
@@ -1157,6 +1236,16 @@ export function subscribeToSupabaseSchedule(
     updatedBy?: string;
   }) => {
     if (!payload.days || Object.keys(payload.days).length === 0) return;
+
+    // Never emit a server snapshot that is older than our latest local save for this month
+    const localLatestMs = getLatestLocalScheduleTimestamp(year, month);
+    if (localLatestMs > 0 && payload.updatedAt) {
+      const incomingMs = new Date(payload.updatedAt).getTime();
+      if (!isNaN(incomingMs) && incomingMs < localLatestMs) {
+        return;
+      }
+    }
+
     const staffSig = (payload.staffList || []).map((s) => `${s.id}:${s.name}`).join('|');
     const fingerprint = `${payload.updatedAt || ''}_${staffSig}_${JSON.stringify(payload.days)}`;
     if (fingerprint === lastEmittedFingerprint) return;
@@ -1193,9 +1282,16 @@ export function subscribeToSupabaseSchedule(
   try {
     const scheduleId = `schedule_${year}_${String(month).padStart(2, '0')}`;
 
-    const fetchAndEmitFullSchedule = async () => {
+    const fetchAndEmitFullSchedule = async (isInitial: boolean = false) => {
+      // Skip background polling while a local save is actively in flight or cooling down
+      if (!isInitial && isScheduleSaveInProgress()) {
+        return;
+      }
       try {
         const fullSched = await fetchScheduleFromSupabase(year, month);
+        if (!isInitial && isScheduleSaveInProgress()) {
+          return;
+        }
         if (fullSched && fullSched.days && Object.keys(fullSched.days).length > 0) {
           emitIfChanged({
             days: fullSched.days,
@@ -1208,7 +1304,7 @@ export function subscribeToSupabaseSchedule(
     };
 
     // 1. Immediate initial fetch from Supabase
-    fetchAndEmitFullSchedule();
+    fetchAndEmitFullSchedule(true);
 
     // 2. Realtime WebSocket subscription
     const channel = client
@@ -1222,7 +1318,7 @@ export function subscribeToSupabaseSchedule(
           filter: `id=eq.${scheduleId}`,
         },
         () => {
-          fetchAndEmitFullSchedule();
+          fetchAndEmitFullSchedule(false);
         }
       )
       .on(
@@ -1234,14 +1330,14 @@ export function subscribeToSupabaseSchedule(
           filter: `key=eq.schedule_staff_${year}_${month}`,
         },
         () => {
-          fetchAndEmitFullSchedule();
+          fetchAndEmitFullSchedule(false);
         }
       )
       .subscribe();
 
     // 3. Deduplicated Resilient Polling Fallback (runs every 6 seconds to guarantee sync even without Realtime extension)
     const pollTimer = setInterval(() => {
-      fetchAndEmitFullSchedule();
+      fetchAndEmitFullSchedule(false);
     }, 6000);
 
     return () => {
