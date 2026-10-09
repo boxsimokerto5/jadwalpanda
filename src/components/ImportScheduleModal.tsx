@@ -17,7 +17,7 @@ import {
 import { MonthSchedule, Staff } from '../types';
 import { parseScheduleCSV, CSVParseResult } from '../utils/csvScheduleImport';
 import { soundManager } from '../utils/audio';
-import { getLocalStaffList, saveStaffListToSupabase } from '../utils/staffService';
+import { getLocalStaffList, saveStaffListToSupabase, unmarkStaffDeletedPermanently } from '../utils/staffService';
 
 interface ImportScheduleModalProps {
   isOpen: boolean;
@@ -107,7 +107,10 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
       // Merge any newly discovered staff from CSV into the Master Bank Data without losing existing master records
       const mergedMasterMap = new Map<number, Staff>();
       effectiveMasterList.forEach((s) => mergedMasterMap.set(s.id, s));
-      appliedStaffList.forEach((s) => mergedMasterMap.set(s.id, s));
+      appliedStaffList.forEach((s) => {
+        unmarkStaffDeletedPermanently(s.id);
+        mergedMasterMap.set(s.id, s);
+      });
       const updatedMasterList = Array.from(mergedMasterMap.values()).sort((a, b) => a.id - b.id);
       saveStaffListToSupabase(updatedMasterList, `Import CSV ${targetMonthName} ${targetYear}`).catch(() => {});
 

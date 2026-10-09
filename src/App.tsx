@@ -50,7 +50,9 @@ import { PWAInstallBanner } from './components/PWAInstallBanner';
 import { 
   getLocalStaffList, 
   subscribeToStaffList, 
-  saveStaffListToSupabase 
+  saveStaffListToSupabase,
+  fetchStaffListFromSupabase,
+  unmarkStaffDeletedPermanently
 } from './utils/staffService';
 import { 
   isSupabaseConfigured, 
@@ -495,25 +497,24 @@ export default function App() {
     return getInitialScheduleForMonth(selectedMonth.year, selectedMonth.month);
   });
 
-  // Master staff directory state (combines September 31 + October 55 + local custom additions)
+  // Master staff directory state (persisted in localStorage & Supabase, respecting permanent deletions)
   const [masterStaffList, setMasterStaffList] = useState<Staff[]>(() => {
-    const local = getLocalStaffList();
-    const map = new Map<number, Staff>();
-    SEPTEMBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
-    OCTOBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
-    local.forEach((s) => map.set(s.id, s));
-    return Array.from(map.values()).sort((a, b) => a.id - b.id);
+    return getLocalStaffList();
   });
 
-  // Real-time listener for master staff directory changes in Supabase
+  // Real-time listener and initial cloud sync for master staff directory changes in Supabase
   useEffect(() => {
+    fetchStaffListFromSupabase()
+      .then((remoteList) => {
+        if (Array.isArray(remoteList) && remoteList.length > 0) {
+          setMasterStaffList(remoteList);
+        }
+      })
+      .catch(() => {});
+
     const unsubStaff = subscribeToStaffList((remoteList) => {
       if (Array.isArray(remoteList) && remoteList.length > 0) {
-        const map = new Map<number, Staff>();
-        SEPTEMBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
-        OCTOBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
-        remoteList.forEach((s) => map.set(s.id, s));
-        setMasterStaffList(Array.from(map.values()).sort((a, b) => a.id - b.id));
+        setMasterStaffList(remoteList);
       }
     });
     return () => unsubStaff();
@@ -768,6 +769,15 @@ export default function App() {
   // Handlers to restore official September / October PDF baseline schedule (Admin Only)
   const handleRestoreSeptemberPdf = useCallback(async () => {
     if (currentUserRoleRef.current !== 'admin') return;
+    SEPTEMBER_2026_STAFF_LIST.forEach((s) => unmarkStaffDeletedPermanently(s.id));
+    setMasterStaffList((prev) => {
+      const map = new Map<number, Staff>();
+      prev.forEach((s) => map.set(s.id, s));
+      SEPTEMBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
+      const merged = Array.from(map.values()).sort((a, b) => a.id - b.id);
+      saveStaffListToSupabase(merged, 'Restore PDF Resmi September 2026').catch(() => {});
+      return merged;
+    });
     const septBaseline: MonthSchedule = {
       year: 2026,
       month: 9,
@@ -793,6 +803,15 @@ export default function App() {
 
   const handleRestoreOctoberPdf = useCallback(async () => {
     if (currentUserRoleRef.current !== 'admin') return;
+    OCTOBER_2026_STAFF_LIST.forEach((s) => unmarkStaffDeletedPermanently(s.id));
+    setMasterStaffList((prev) => {
+      const map = new Map<number, Staff>();
+      prev.forEach((s) => map.set(s.id, s));
+      OCTOBER_2026_STAFF_LIST.forEach((s) => map.set(s.id, s));
+      const merged = Array.from(map.values()).sort((a, b) => a.id - b.id);
+      saveStaffListToSupabase(merged, 'Restore PDF Resmi Oktober 2026').catch(() => {});
+      return merged;
+    });
     const octBaseline: MonthSchedule = {
       year: 2026,
       month: 10,
@@ -832,6 +851,7 @@ export default function App() {
 
     // Update Master Staff List with any newly added staff from the CSV
     if (stampedSched.staffList && stampedSched.staffList.length > 0) {
+      stampedSched.staffList.forEach((s) => unmarkStaffDeletedPermanently(s.id));
       setMasterStaffList((prevMaster) => {
         const map = new Map<number, Staff>();
         prevMaster.forEach((s) => map.set(s.id, s));
@@ -968,12 +988,17 @@ export default function App() {
     setIsRefreshing(true);
     setCloudStatus('syncing');
     try {
-      const [supabaseData] = await Promise.all([
+      const [supabaseData, latestStaffList] = await Promise.all([
         fetchScheduleFromSupabase(selectedMonth.year, selectedMonth.month),
+        fetchStaffListFromSupabase().catch(() => null),
         fetchMorningPostAssignmentsFromSupabase(selectedMonth.year, selectedMonth.month).catch(() => null),
         fetchP5TaskOptionsFromSupabase().catch(() => null),
         fetchHandoverReportsFromSupabase().catch(() => null),
       ]);
+
+      if (latestStaffList && Array.isArray(latestStaffList) && latestStaffList.length > 0) {
+        setMasterStaffList(latestStaffList);
+      }
 
       if (supabaseData && supabaseData.days && Object.keys(supabaseData.days).length > 0) {
         isIncomingRemoteUpdateRef.current = true;

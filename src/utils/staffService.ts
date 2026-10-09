@@ -4,9 +4,57 @@ import { OCTOBER_2026_STAFF_LIST } from '../data/octoberSchedule';
 import { getSupabaseClient } from './supabaseService';
 
 export const STAFF_STORAGE_KEY = 'wali_asuh_master_staff_list_v2';
+export const DELETED_STAFF_IDS_KEY = 'wali_asuh_deleted_staff_ids_v1';
 const STAFF_DOC_ID = 'staff_roster';
 
 export type Unsubscribe = () => void;
+
+/**
+ * Retrieve set of permanently deleted staff IDs from localStorage
+ */
+export function getDeletedStaffIds(): Set<number> {
+  try {
+    const raw = localStorage.getItem(DELETED_STAFF_IDS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return new Set(parsed.map(Number).filter((n) => !isNaN(n) && n > 0));
+      }
+    }
+  } catch {}
+  return new Set<number>();
+}
+
+/**
+ * Save set of permanently deleted staff IDs to localStorage
+ */
+export function saveDeletedStaffIds(ids: Set<number>): void {
+  try {
+    localStorage.setItem(DELETED_STAFF_IDS_KEY, JSON.stringify(Array.from(ids)));
+  } catch {}
+}
+
+/**
+ * Mark a staff ID as permanently deleted
+ */
+export function markStaffDeletedPermanently(staffId: number): Set<number> {
+  const ids = getDeletedStaffIds();
+  ids.add(Number(staffId));
+  saveDeletedStaffIds(ids);
+  return ids;
+}
+
+/**
+ * Unmark a staff ID from permanently deleted list (e.g. when re-imported or restored)
+ */
+export function unmarkStaffDeletedPermanently(staffId: number): Set<number> {
+  const ids = getDeletedStaffIds();
+  if (ids.has(Number(staffId))) {
+    ids.delete(Number(staffId));
+    saveDeletedStaffIds(ids);
+  }
+  return ids;
+}
 
 /**
  * Generate automatic short initials from a staff member's name
@@ -29,21 +77,39 @@ export function generateStaffInitials(name: string): string {
 }
 
 /**
- * Retrieve master staff list from localStorage or fallback to baseline
+ * Build default baseline master staff list (September + October) excluding permanently deleted IDs
+ */
+export function getDefaultMasterStaffList(): Staff[] {
+  const deletedIds = getDeletedStaffIds();
+  const map = new Map<number, Staff>();
+  SEPTEMBER_2026_STAFF_LIST.forEach((s) => {
+    if (!deletedIds.has(s.id)) map.set(s.id, s);
+  });
+  OCTOBER_2026_STAFF_LIST.forEach((s) => {
+    if (!deletedIds.has(s.id)) map.set(s.id, s);
+  });
+  return Array.from(map.values()).sort((a, b) => a.id - b.id);
+}
+
+/**
+ * Retrieve master staff list from localStorage or fallback to baseline (always filtering out permanently deleted IDs)
  */
 export function getLocalStaffList(): Staff[] {
+  const deletedIds = getDeletedStaffIds();
   try {
     const raw = localStorage.getItem(STAFF_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0 && parsed.length !== SEPTEMBER_2026_STAFF_LIST.length) {
-        return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed
+          .filter((s: Staff) => s && typeof s.id === 'number' && !deletedIds.has(s.id))
+          .sort((a: Staff, b: Staff) => a.id - b.id);
       }
     }
   } catch (e) {
     console.warn('[StaffService] Error reading local staff list:', e);
   }
-  return OCTOBER_2026_STAFF_LIST;
+  return getDefaultMasterStaffList();
 }
 
 /**
@@ -51,9 +117,13 @@ export function getLocalStaffList(): Staff[] {
  */
 export function saveLocalStaffList(list: Staff[]): void {
   try {
-    localStorage.setItem(STAFF_STORAGE_KEY, JSON.stringify(list));
+    const deletedIds = getDeletedStaffIds();
+    const cleanList = list
+      .filter((s) => s && typeof s.id === 'number' && !deletedIds.has(s.id))
+      .sort((a, b) => a.id - b.id);
+    localStorage.setItem(STAFF_STORAGE_KEY, JSON.stringify(cleanList));
     window.dispatchEvent(
-      new CustomEvent('wali_asuh_staff_list_updated', { detail: list })
+      new CustomEvent('wali_asuh_staff_list_updated', { detail: cleanList })
     );
   } catch (e) {
     console.error('[StaffService] Failed to save staff list locally:', e);
@@ -67,38 +137,120 @@ export async function saveStaffListToSupabase(
   list: Staff[],
   updatedBy: string = 'Admin'
 ): Promise<boolean> {
-  saveLocalStaffList(list);
+  const deletedIds = getDeletedStaffIds();
+  const cleanList = list
+    .filter((s) => s && typeof s.id === 'number' && !deletedIds.has(s.id))
+    .sort((a, b) => a.id - b.id);
+
+  saveLocalStaffList(cleanList);
 
   const client = getSupabaseClient();
   if (!client) return true;
 
   try {
-    // 1. Save to system_settings
+    const nowIso = new Date().toISOString();
+    // 1. Save authoritative list + deletedIds to system_settings
     await client.from('system_settings').upsert({
       key: STAFF_DOC_ID,
-      value_json: { list, count: list.length, updatedAt: new Date().toISOString(), updatedBy },
-      updated_at: new Date().toISOString(),
+      value_json: {
+        list: cleanList,
+        deletedIds: Array.from(deletedIds),
+        count: cleanList.length,
+        updatedAt: nowIso,
+        updatedBy,
+      },
+      updated_at: nowIso,
     });
 
-    // 2. Also upsert to relational staff table
-    const records = list.map((s) => ({
-      id: s.id,
-      code: s.code || '',
-      name: s.name,
-      gender: s.gender || 'L',
-      jenjang: s.jenjang || '-',
-      role: s.role || 'Wali Asuh',
-      group_name: s.group || '',
-      initials: s.initials || generateStaffInitials(s.name),
-      phone: s.phone || '',
-      nip: s.nip || '',
-      is_active: s.status !== 'archived',
-    }));
+    // 2. Also upsert active records to relational staff table
+    if (cleanList.length > 0) {
+      const records = cleanList.map((s) => ({
+        id: s.id,
+        code: s.code || '',
+        name: s.name,
+        gender: s.gender || 'L',
+        jenjang: s.jenjang || '-',
+        role: s.role || 'Wali Asuh',
+        group_name: s.group || '',
+        initials: s.initials || generateStaffInitials(s.name),
+        phone: s.phone || '',
+        nip: s.nip || '',
+        is_active: s.status !== 'archived',
+      }));
 
-    await client.from('staff').upsert(records, { onConflict: 'id' });
+      await client.from('staff').upsert(records, { onConflict: 'id' });
+    }
+
+    // 3. Ensure any permanently deleted IDs are removed from relational staff table
+    if (deletedIds.size > 0) {
+      const delArray = Array.from(deletedIds);
+      try {
+        await client.from('schedule_assignments').delete().in('staff_id', delArray);
+      } catch {}
+      try {
+        await client.from('staff').delete().in('id', delArray);
+      } catch {}
+    }
+
     return true;
   } catch (err: any) {
     console.warn('[StaffService] Notice when saving staff to Supabase:', err);
+    return true;
+  }
+}
+
+/**
+ * Permanently delete a staff member from Master Directory, LocalStorage, and Supabase tables
+ */
+export async function deleteStaffPermanentlyFromSupabase(
+  staffId: number,
+  updatedList: Staff[],
+  updatedBy: string = 'Admin'
+): Promise<boolean> {
+  const deletedIds = markStaffDeletedPermanently(staffId);
+  const cleanList = updatedList
+    .filter((s) => s && typeof s.id === 'number' && s.id !== staffId && !deletedIds.has(s.id))
+    .sort((a, b) => a.id - b.id);
+
+  saveLocalStaffList(cleanList);
+
+  const client = getSupabaseClient();
+  if (!client) return true;
+
+  try {
+    const nowIso = new Date().toISOString();
+
+    // 1. Update system_settings FIRST so real-time listeners immediately receive the deletedIds and updated list
+    await client.from('system_settings').upsert({
+      key: STAFF_DOC_ID,
+      value_json: {
+        list: cleanList,
+        deletedIds: Array.from(deletedIds),
+        count: cleanList.length,
+        updatedAt: nowIso,
+        updatedBy,
+      },
+      updated_at: nowIso,
+    });
+
+    // 2. Clean up foreign key references in dependent tables before deleting from staff table
+    try {
+      await client.from('schedule_assignments').delete().eq('staff_id', staffId);
+    } catch {}
+    try {
+      await client.from('daily_tasks').delete().eq('staff_id', staffId);
+    } catch {}
+    try {
+      await client.from('shift_swaps').update({ staff1_id: null }).eq('staff1_id', staffId);
+      await client.from('shift_swaps').update({ staff2_id: null }).eq('staff2_id', staffId);
+    } catch {}
+
+    // 3. Delete row permanently from relational staff table in Supabase
+    await client.from('staff').delete().eq('id', staffId);
+
+    return true;
+  } catch (err: any) {
+    console.warn('[StaffService] Notice when deleting staff permanently from Supabase:', err);
     return true;
   }
 }
@@ -120,27 +272,41 @@ export async function fetchStaffListFromSupabase(): Promise<Staff[] | null> {
       .eq('key', STAFF_DOC_ID)
       .maybeSingle();
 
+    const localDeletedIds = getDeletedStaffIds();
+    if (Array.isArray(settingData?.value_json?.deletedIds)) {
+      settingData.value_json.deletedIds.forEach((id: any) => {
+        const n = Number(id);
+        if (!isNaN(n) && n > 0) localDeletedIds.add(n);
+      });
+      saveDeletedStaffIds(localDeletedIds);
+    }
+
     if (settingData?.value_json?.list && Array.isArray(settingData.value_json.list) && settingData.value_json.list.length > 0) {
-      saveLocalStaffList(settingData.value_json.list);
-      return settingData.value_json.list as Staff[];
+      const filtered = (settingData.value_json.list as Staff[])
+        .filter((s) => s && typeof s.id === 'number' && !localDeletedIds.has(s.id))
+        .sort((a, b) => a.id - b.id);
+      saveLocalStaffList(filtered);
+      return filtered;
     }
 
     // Fallback to staff table
     const { data: staffRows } = await client.from('staff').select('*').order('id', { ascending: true });
     if (staffRows && staffRows.length > 0) {
-      const mapped: Staff[] = staffRows.map((r: any) => ({
-        id: r.id,
-        code: r.code,
-        name: r.name,
-        gender: r.gender,
-        jenjang: r.jenjang,
-        role: r.role,
-        group: r.group_name,
-        initials: r.initials,
-        phone: r.phone,
-        nip: r.nip,
-        isActive: r.is_active,
-      }));
+      const mapped: Staff[] = staffRows
+        .filter((r: any) => r && !localDeletedIds.has(Number(r.id)))
+        .map((r: any) => ({
+          id: r.id,
+          code: r.code,
+          name: r.name,
+          gender: r.gender,
+          jenjang: r.jenjang,
+          role: r.role,
+          group: r.group_name,
+          initials: r.initials,
+          phone: r.phone,
+          nip: r.nip,
+          isActive: r.is_active,
+        }));
       saveLocalStaffList(mapped);
       return mapped;
     }
@@ -158,14 +324,27 @@ export function subscribeToStaffList(
   onData: (list: Staff[]) => void,
   onError?: (err: Error) => void
 ): Unsubscribe {
+  const localHandler = (e: any) => {
+    if (e.detail && Array.isArray(e.detail)) {
+      const deletedIds = getDeletedStaffIds();
+      onData(e.detail.filter((s: Staff) => !deletedIds.has(s.id)));
+    }
+  };
+  const storageHandler = (e: StorageEvent) => {
+    if (e.key === STAFF_STORAGE_KEY || e.key === DELETED_STAFF_IDS_KEY) {
+      onData(getLocalStaffList());
+    }
+  };
+
+  window.addEventListener('wali_asuh_staff_list_updated', localHandler);
+  window.addEventListener('storage', storageHandler);
+
   const client = getSupabaseClient();
   if (!client) {
-    // Local fallback listener
-    const handler = (e: any) => {
-      if (e.detail) onData(e.detail);
+    return () => {
+      window.removeEventListener('wali_asuh_staff_list_updated', localHandler);
+      window.removeEventListener('storage', storageHandler);
     };
-    window.addEventListener('wali_asuh_staff_list_updated', handler);
-    return () => window.removeEventListener('wali_asuh_staff_list_updated', handler);
   }
 
   try {
@@ -175,9 +354,20 @@ export function subscribeToStaffList(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'system_settings', filter: `key=eq.${STAFF_DOC_ID}` },
         (payload: any) => {
-          if (payload.new?.value_json?.list) {
-            saveLocalStaffList(payload.new.value_json.list);
-            onData(payload.new.value_json.list);
+          const deletedIds = getDeletedStaffIds();
+          if (Array.isArray(payload.new?.value_json?.deletedIds)) {
+            payload.new.value_json.deletedIds.forEach((id: any) => {
+              const n = Number(id);
+              if (!isNaN(n) && n > 0) deletedIds.add(n);
+            });
+            saveDeletedStaffIds(deletedIds);
+          }
+          if (Array.isArray(payload.new?.value_json?.list)) {
+            const filtered = (payload.new.value_json.list as Staff[])
+              .filter((s) => s && typeof s.id === 'number' && !deletedIds.has(s.id))
+              .sort((a, b) => a.id - b.id);
+            saveLocalStaffList(filtered);
+            onData(filtered);
           }
         }
       )
@@ -192,21 +382,32 @@ export function subscribeToStaffList(
       .subscribe();
 
     return () => {
+      window.removeEventListener('wali_asuh_staff_list_updated', localHandler);
+      window.removeEventListener('storage', storageHandler);
       client.removeChannel(channel);
     };
   } catch (err: any) {
     if (onError) onError(err);
-    return () => {};
+    return () => {
+      window.removeEventListener('wali_asuh_staff_list_updated', localHandler);
+      window.removeEventListener('storage', storageHandler);
+    };
   }
 }
 
 /**
- * Suggest next unique ID for a newly created staff member
+ * Suggest next unique ID for a newly created staff member (never reusing baseline or deleted IDs)
  */
 export function suggestNextStaffId(currentList: Staff[]): number {
-  if (!currentList || currentList.length === 0) return 1;
-  const maxId = Math.max(...currentList.map((s) => s.id || 0));
-  return maxId + 1;
+  const deletedIds = getDeletedStaffIds();
+  const allIds = [
+    ...(currentList || []).map((s) => s.id || 0),
+    ...SEPTEMBER_2026_STAFF_LIST.map((s) => s.id || 0),
+    ...OCTOBER_2026_STAFF_LIST.map((s) => s.id || 0),
+    ...Array.from(deletedIds),
+  ];
+  if (allIds.length === 0) return 1;
+  return Math.max(...allIds) + 1;
 }
 
 /**

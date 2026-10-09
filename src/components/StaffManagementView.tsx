@@ -34,6 +34,8 @@ import {
   updateStaffInMasterList,
   removeStaffFromMasterList,
   saveStaffListToSupabase,
+  deleteStaffPermanentlyFromSupabase,
+  unmarkStaffDeletedPermanently,
 } from '../utils/staffService';
 import { soundManager } from '../utils/audio';
 import { INDONESIAN_MONTH_NAMES } from '../utils/scheduler';
@@ -162,6 +164,7 @@ export const StaffManagementView: React.FC<StaffManagementViewProps> = ({
     }
 
     const newId = suggestNextStaffId(masterStaffList);
+    unmarkStaffDeletedPermanently(newId);
     const finalInitials = formInitials.trim() || generateStaffInitials(formName);
     const finalCode = formCode.trim() || suggestNextStaffCode(formGender, masterStaffList);
 
@@ -309,10 +312,14 @@ export const StaffManagementView: React.FC<StaffManagementViewProps> = ({
     const staffId = deletingStaffPermanent.id;
     const staffName = deletingStaffPermanent.name;
 
-    // Remove from master
+    // Remove from master and permanently delete in LocalStorage + Supabase
     const updatedMaster = removeStaffFromMasterList(masterStaffList, staffId);
     setMasterStaffList(updatedMaster);
-    await saveStaffListToSupabase(updatedMaster, `Admin Hapus Permanen ${staffName}`);
+    await deleteStaffPermanentlyFromSupabase(
+      staffId,
+      updatedMaster,
+      `Admin Hapus Permanen ${staffName}`
+    );
 
     // If present in current schedule, remove also
     if (currentMonthStaff.some((s) => s.id === staffId)) {
@@ -322,13 +329,20 @@ export const StaffManagementView: React.FC<StaffManagementViewProps> = ({
         localStorage.setItem(`wali_asuh_schedule_v16_${updatedSchedule.year}_${updatedSchedule.month}`, JSON.stringify(updatedSchedule));
         localStorage.setItem(`wali_asuh_schedule_v15_${updatedSchedule.year}_${updatedSchedule.month}`, JSON.stringify(updatedSchedule));
         localStorage.setItem(`wali_asuh_schedule_v14_${updatedSchedule.year}_${updatedSchedule.month}`, JSON.stringify(updatedSchedule));
+        localStorage.setItem(`wali_asuh_schedule_v13_${updatedSchedule.year}_${updatedSchedule.month}`, JSON.stringify(updatedSchedule));
       } catch {}
-      await saveScheduleToSupabase(updatedSchedule, `Admin Hapus ${staffName}`);
+      await saveScheduleToSupabase(updatedSchedule, `Admin Hapus Permanen ${staffName}`);
+
+      if (selectedStaffId === staffId && updatedSchedule.staffList && updatedSchedule.staffList.length > 0) {
+        setSelectedStaffId(updatedSchedule.staffList[0].id);
+      }
+    } else if (selectedStaffId === staffId && updatedMaster.length > 0) {
+      setSelectedStaffId(updatedMaster[0].id);
     }
 
     setDeletingStaffPermanent(null);
     soundManager.playBell();
-    showToast(`"${staffName}" telah dihapus permanen dari sistem.`, 'error');
+    showToast(`"${staffName}" telah dihapus permanen dari sistem dan Bank Data.`, 'error');
   };
 
   // Filtered lists

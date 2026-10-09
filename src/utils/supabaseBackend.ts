@@ -74,8 +74,11 @@ export async function fetchScheduleFromSupabaseBackend(
 
   // LocalStorage fallback
   try {
-    const raw = localStorage.getItem(`wali_asuh_schedule_v16_${year}_${month}`) ||
-      localStorage.getItem(`wali_asuh_schedule_v15_${year}_${month}`);
+    const raw =
+      localStorage.getItem(`wali_asuh_schedule_v16_${year}_${month}`) ||
+      localStorage.getItem(`wali_asuh_schedule_v15_${year}_${month}`) ||
+      localStorage.getItem(`wali_asuh_schedule_v14_${year}_${month}`) ||
+      localStorage.getItem(`wali_asuh_schedule_v13_${year}_${month}`);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed?.days) return parsed;
@@ -97,7 +100,7 @@ export function subscribeToSchedule(
         month,
         monthName: '',
         totalDays: Object.keys(supaData.days).length || 30,
-        staffList: [],
+        staffList: supaData.staffList || [],
         days: supaData.days,
         updatedAt: supaData.updatedAt,
         updatedBy: supaData.updatedBy,
@@ -112,10 +115,13 @@ export async function saveScheduleToBackend(
   schedule: MonthSchedule,
   updaterName: string = 'User'
 ): Promise<boolean> {
-  // Always persist locally first
+  // Always persist locally first across all cache keys
   try {
-    localStorage.setItem(`wali_asuh_schedule_v16_${schedule.year}_${schedule.month}`, JSON.stringify(schedule));
-    localStorage.setItem(`wali_asuh_schedule_v15_${schedule.year}_${schedule.month}`, JSON.stringify(schedule));
+    const serialized = JSON.stringify(schedule);
+    localStorage.setItem(`wali_asuh_schedule_v16_${schedule.year}_${schedule.month}`, serialized);
+    localStorage.setItem(`wali_asuh_schedule_v15_${schedule.year}_${schedule.month}`, serialized);
+    localStorage.setItem(`wali_asuh_schedule_v14_${schedule.year}_${schedule.month}`, serialized);
+    localStorage.setItem(`wali_asuh_schedule_v13_${schedule.year}_${schedule.month}`, serialized);
   } catch {}
 
   return await saveScheduleToSupabase(schedule, updaterName);
