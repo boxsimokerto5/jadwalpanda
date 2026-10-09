@@ -36,7 +36,7 @@ export function getLocalStaffList(): Staff[] {
     const raw = localStorage.getItem(STAFF_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length >= OCTOBER_2026_STAFF_LIST.length) {
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed.length !== SEPTEMBER_2026_STAFF_LIST.length) {
         return parsed;
       }
     }

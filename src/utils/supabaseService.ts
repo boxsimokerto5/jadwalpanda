@@ -928,6 +928,7 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
     if (error || !schedData) return null;
 
     let staffList: Staff[] | undefined = undefined;
+    let hasExplicitMonthStaff = false;
 
     // 1. Check month-specific staff roster in system_settings first
     try {
@@ -942,6 +943,7 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
         monthStaffSetting.value_json.staffList.length > 0
       ) {
         staffList = monthStaffSetting.value_json.staffList;
+        hasExplicitMonthStaff = true;
       }
     } catch {}
 
@@ -950,7 +952,7 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
       try {
         const { data: staffData } = await client.from('staff').select('*').order('id', { ascending: true });
         if (staffData && staffData.length > 0) {
-          staffList = staffData.map((s) => ({
+          const allDbStaff: Staff[] = staffData.map((s) => ({
             id: s.id,
             code: s.code,
             name: s.name,
@@ -962,15 +964,35 @@ export async function fetchScheduleFromSupabase(year: number, month: number): Pr
             phone: s.phone,
             nip: s.nip,
           }));
+
+          // Filter to staff IDs actually present in this month's days_json if available
+          const day1Map = schedData.days_json?.[1] || schedData.days_json?.['1'];
+          if (day1Map && typeof day1Map === 'object' && Object.keys(day1Map).length > 0) {
+            const activeIdsInDays = new Set(Object.keys(day1Map).map(Number));
+            const filtered = allDbStaff.filter((s) => activeIdsInDays.has(s.id));
+            if (filtered.length > 0) {
+              staffList = filtered;
+              hasExplicitMonthStaff = true;
+            } else {
+              staffList = allDbStaff;
+            }
+          } else {
+            staffList = allDbStaff;
+          }
         }
       } catch {}
     }
 
-    // 3. Ensure October 2026 (or later) has full 55 baseline staff if database only had 31
+    // 3. Fallback to baseline only if no explicit month staff roster was saved
     const baseline = getBaselineStaffForMonth(schedData.year, schedData.month);
     if (!staffList || staffList.length === 0) {
       staffList = baseline;
-    } else if (schedData.year === 2026 && schedData.month === 10 && staffList.length < OCTOBER_2026_STAFF_LIST.length) {
+    } else if (
+      !hasExplicitMonthStaff &&
+      schedData.year === 2026 &&
+      schedData.month === 10 &&
+      staffList.length === SEPTEMBER_2026_STAFF_LIST.length
+    ) {
       const mergedMap = new Map<number, Staff>();
       OCTOBER_2026_STAFF_LIST.forEach((s) => mergedMap.set(s.id, s));
       staffList.forEach((s) => mergedMap.set(s.id, s));
@@ -1135,7 +1157,8 @@ export function subscribeToSupabaseSchedule(
     updatedBy?: string;
   }) => {
     if (!payload.days || Object.keys(payload.days).length === 0) return;
-    const fingerprint = `${payload.updatedAt || ''}_${JSON.stringify(payload.days)}`;
+    const staffSig = (payload.staffList || []).map((s) => `${s.id}:${s.name}`).join('|');
+    const fingerprint = `${payload.updatedAt || ''}_${staffSig}_${JSON.stringify(payload.days)}`;
     if (fingerprint === lastEmittedFingerprint) return;
     lastEmittedFingerprint = fingerprint;
     onUpdate(payload);
@@ -1170,8 +1193,7 @@ export function subscribeToSupabaseSchedule(
   try {
     const scheduleId = `schedule_${year}_${String(month).padStart(2, '0')}`;
 
-    // 1. Immediate initial fetch from Supabase
-    (async () => {
+    const fetchAndEmitFullSchedule = async () => {
       try {
         const fullSched = await fetchScheduleFromSupabase(year, month);
         if (fullSched && fullSched.days && Object.keys(fullSched.days).length > 0) {
@@ -1183,7 +1205,10 @@ export function subscribeToSupabaseSchedule(
           });
         }
       } catch {}
-    })();
+    };
+
+    // 1. Immediate initial fetch from Supabase
+    fetchAndEmitFullSchedule();
 
     // 2. Realtime WebSocket subscription
     const channel = client
@@ -1196,34 +1221,27 @@ export function subscribeToSupabaseSchedule(
           table: 'schedules',
           filter: `id=eq.${scheduleId}`,
         },
-        (payload) => {
-          if (payload.new && (payload.new as any).days_json) {
-            emitIfChanged({
-              days: (payload.new as any).days_json,
-              updatedAt: (payload.new as any).updated_at,
-              updatedBy: (payload.new as any).updated_by,
-            });
-          }
+        () => {
+          fetchAndEmitFullSchedule();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'system_settings',
+          filter: `key=eq.schedule_staff_${year}_${month}`,
+        },
+        () => {
+          fetchAndEmitFullSchedule();
         }
       )
       .subscribe();
 
     // 3. Deduplicated Resilient Polling Fallback (runs every 6 seconds to guarantee sync even without Realtime extension)
-    const pollTimer = setInterval(async () => {
-      try {
-        const { data, error } = await client
-          .from('schedules')
-          .select('days_json, updated_at, updated_by')
-          .eq('id', scheduleId)
-          .maybeSingle();
-        if (!error && data && data.days_json && Object.keys(data.days_json).length > 0) {
-          emitIfChanged({
-            days: data.days_json,
-            updatedAt: data.updated_at,
-            updatedBy: data.updated_by,
-          });
-        }
-      } catch {}
+    const pollTimer = setInterval(() => {
+      fetchAndEmitFullSchedule();
     }, 6000);
 
     return () => {

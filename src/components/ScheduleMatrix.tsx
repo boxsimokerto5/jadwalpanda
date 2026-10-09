@@ -46,6 +46,7 @@ interface ScheduleMatrixProps {
   schedule: MonthSchedule;
   setSchedule: React.Dispatch<React.SetStateAction<MonthSchedule>>;
   staffList: Staff[];
+  masterStaffList?: Staff[];
   selectedStaffId: number;
   setSelectedStaffId: (id: number) => void;
   activeDay: number;
@@ -62,6 +63,7 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
   schedule,
   setSchedule,
   staffList,
+  masterStaffList,
   selectedStaffId,
   setSelectedStaffId,
   activeDay,
@@ -345,8 +347,8 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
               className="bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-2 py-1 text-xs font-semibold text-slate-800 dark:text-slate-100 focus:outline-none w-full sm:w-auto max-w-[140px] sm:max-w-none truncate"
             >
               <option value="ALL">Semua Petugas ({staffList.length})</option>
-              <option value="LAKI">Petugas Laki-laki (17)</option>
-              <option value="PEREMPUAN">Petugas Perempuan (14)</option>
+              <option value="LAKI">Petugas Laki-laki ({staffList.filter((s) => s.gender === 'L').length})</option>
+              <option value="PEREMPUAN">Petugas Perempuan ({staffList.filter((s) => s.gender === 'P').length})</option>
             </select>
           </div>
 
@@ -1552,6 +1554,7 @@ export const ScheduleMatrix: React.FC<ScheduleMatrixProps> = ({
           isOpen={isImportModalOpen}
           onClose={() => setIsImportModalOpen(false)}
           staffList={staffList}
+          masterStaffList={masterStaffList}
           selectedMonth={{
             year: schedule.year,
             month: schedule.month,

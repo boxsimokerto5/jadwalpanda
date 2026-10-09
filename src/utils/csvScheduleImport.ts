@@ -1,4 +1,8 @@
 import { ShiftCode, Staff } from '../types';
+import { OCTOBER_2026_STAFF_LIST } from '../data/octoberSchedule';
+import { SEPTEMBER_2026_STAFF_LIST } from '../data/septemberSchedule';
+import { INITIAL_STAFF_LIST } from '../data/initialSchedule';
+import { generateStaffInitials, suggestNextStaffCode } from './staffService';
 
 export interface CSVMatchedStaff {
   staff: Staff;
@@ -6,6 +10,7 @@ export interface CSVMatchedStaff {
   shiftCount: number;
   rowIdx: number;
   shifts: Record<number, ShiftCode>;
+  isNewStaff?: boolean;
 }
 
 export interface CSVParseResult {
@@ -13,6 +18,8 @@ export interface CSVParseResult {
   totalDays: number;
   matchedStaffList: CSVMatchedStaff[];
   finalStaffList?: Staff[];
+  newStaffList: Staff[];
+  removedStaffList: Staff[];
   unmatchedRows: { name: string; rowIdx: number }[];
   days: Record<number, Record<number, ShiftCode>>;
   errors: string[];
@@ -21,14 +28,67 @@ export interface CSVParseResult {
 }
 
 /**
- * Clean and normalize a string for tolerant matching
+ * Clean and normalize a string for tolerant name matching
  */
 function cleanString(str: string): string {
   return str
     .toLowerCase()
-    .replace(/['’`".,\-_\/\\()]/g, '')
+    .replace(/['’`".,\-_\/\\()]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Compact alphanumeric representation (no spaces) for matching e.g. "Aziz Fajar" vs "Azizfajar"
+ */
+function compactString(str: string): string {
+  return cleanString(str).replace(/\s+/g, '');
+}
+
+/**
+ * Detect whether an Indonesian name is likely female when gender is not explicitly provided
+ */
+function inferFemaleGenderFromName(name: string): boolean {
+  const lower = ` ${cleanString(name)} `;
+  const femaleKeywords = [
+    'dewi', 'putri', 'ayu', 'siti', 'rina', 'wati', 'nurul', 'anita', 'erna',
+    'qobsoh', 'fani', 'maisun', 'laili', 'fitri', 'indah', 'sri', 'eka', 'dwi',
+    'nisa', 'annisa', 'anisa', 'zahra', 'fatimah', 'aisyah', 'khadijah', 'ulfa',
+    'rohmah', 'hikmah', 'nabila', 'nadia', 'amelia', 'intan', 'mega', 'ratna',
+    'maya', 'dian', 'eni', 'umi', 'ibu', 'ny', 'hj', 'binti', 'ning', 'retno',
+    'wahyuni', 'lestari', 'handayani', 'kartika', 'permata', 'safitri',
+    'anggraini', 'puspita', 'rahmawati', 'setiawati', 'susanti', 'yuli', 'yuni',
+    'novi', 'desi', 'vina', 'vita', 'ika', 'lia', 'nia', 'ria', 'tia', 'mia',
+    'eva', 'evi', 'elsa', 'winda', 'widya', 'siska', 'citra', 'bella', 'dina',
+    'fira', 'gita', 'hana', 'hani', 'ira', 'ika', 'kartini', 'lina', 'linda',
+    'mira', 'nina', 'nur', 'puji', 'rani', 'ratih', 'risa', 'risti', 'rosa',
+    'sari', 'septi', 'silvi', 'suci', 'tari', 'tika', 'titik', 'tri', 'ulan',
+    'vera', 'vivi', 'wanda', 'wulan', 'yanti', 'yulia', 'zulfa', 'shofia',
+    'farida', 'halimah', 'hasanah', 'jannah', 'karimah', 'latifah', 'maharani',
+    'maulida', 'mutiara', 'nadira', 'novita', 'nuraini', 'nurhayati', 'オク',
+  ];
+  // Avoid matching male names with 'nur' + male word like 'nur hidayat', 'nur aziz', 'nur rohman', 'm nur'
+  const maleOverrides = [
+    'muhammad', 'mohammad', 'moh', 'achmad', 'ahmad', 'abdul', 'agus', 'ali',
+    'amin', 'andi', 'anto', 'anwar', 'arif', 'aris', 'aziz', 'bagus', 'bambang',
+    'budi', 'cahyo', 'dani', 'dedi', 'deni', 'didik', 'dimas', 'doni', 'edi',
+    'eko', 'fajar', 'farhan', 'fauzi', 'ferry', 'firman', 'hadi', 'hamid',
+    'handoko', 'hari', 'haris', 'hasan', 'hendra', 'hendro', 'heri', 'heru',
+    'hidayat', 'ihsan', 'ilham', 'imam', 'indra', 'irfan', 'irwan', 'ivan',
+    'joko', 'khoirul', 'kurniawan', 'lukman', 'mahmud', 'miftah', 'muh',
+    'mulyono', 'munir', 'mustofa', 'nanang', 'nugroho', 'prabowo', 'pratama',
+    'putra', 'rahmat', 'reza', 'ridwan', 'riki', 'riko', 'rizal', 'rizki',
+    'rizky', 'rohman', 'roni', 'rudi', 'ryan', 'saiful', 'salim', 'santoso',
+    'saputra', 'setiawan', 'sigit', 'slam', 'sugeng', 'suharto', 'sujono',
+    'sulaiman', 'sunarto', 'supri', 'surya', 'sutrisno', 'syafii', 'syah',
+    'taufik', 'teguh', 'tono', 'wahyu', 'wahyudi', 'wawan', 'wijaya', 'yanto',
+    'yoga', 'yogi', 'yudi', 'yusuf', 'zainal', 'zaki',
+  ];
+  const words = cleanString(name).split(/\s+/).filter(Boolean);
+  if (words.some((w) => maleOverrides.includes(w))) {
+    return false;
+  }
+  return words.some((w) => femaleKeywords.includes(w)) || femaleKeywords.some((kw) => lower.includes(` ${kw} `));
 }
 
 /**
@@ -40,8 +100,8 @@ export function parseCSVLines(text: string): string[][] {
   let currentCell = '';
   let inQuotes = false;
 
-  // Normalize line breaks
-  const cleanText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // Strip BOM if present and normalize line breaks
+  const cleanText = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
   for (let i = 0; i < cleanText.length; i++) {
     const char = cleanText[i];
@@ -126,6 +186,7 @@ export function normalizeShiftCode(raw: string): ShiftCode {
   if (clean.startsWith('P2')) return 'P2';
   if (clean.startsWith('P3')) return 'P3';
   if (clean.startsWith('P4')) return 'P4';
+  if (clean.startsWith('P5')) return 'P5';
   if (clean.startsWith('P')) return 'P1';
   if (clean.startsWith('S2')) return 'S2A';
   if (clean.startsWith('S3')) return 'S3A';
@@ -141,18 +202,24 @@ export function normalizeShiftCode(raw: string): ShiftCode {
 }
 
 /**
- * Main parser: Parses CSV content and maps it to target staff list and days
+ * Main parser: Parses CSV content strictly by Wali Asuh Name.
+ * - Automatically registers new staff if their name is not yet in the database.
+ * - Automatically updates the month's roster to match the exact staff list in the CSV
+ *   (any staff not present in the CSV is removed from that month's schedule).
  */
 export function parseScheduleCSV(
   csvContent: string,
   staffList: Staff[],
   targetDaysCount: number = 31,
-  existingDays?: Record<number, Record<number, ShiftCode>>
+  _existingDays?: Record<number, Record<number, ShiftCode>>,
+  masterStaffList?: Staff[]
 ): CSVParseResult {
   const result: CSVParseResult = {
     success: false,
     totalDays: targetDaysCount,
     matchedStaffList: [],
+    newStaffList: [],
+    removedStaffList: [],
     unmatchedRows: [],
     days: {},
     errors: [],
@@ -166,11 +233,11 @@ export function parseScheduleCSV(
     return result;
   }
 
-  // 1. Locate the header row containing day numbers (1, 2, 3... 30/31)
+  // 1. Locate the header row containing day numbers (1, 2, 3... 28/29/30/31)
   let headerRowIdx = -1;
   const dayColMap: { day: number; colIdx: number }[] = [];
 
-  for (let r = 0; r < Math.min(rows.length, 10); r++) {
+  for (let r = 0; r < Math.min(rows.length, 15); r++) {
     const row = rows[r];
     const candidateDays: { day: number; colIdx: number }[] = [];
 
@@ -182,10 +249,9 @@ export function parseScheduleCSV(
       }
     });
 
-    // Check if this row contains a sequential series of at least 15 day numbers
-    if (candidateDays.length >= 15) {
+    // Check if this row contains a sequential series of at least 14 day numbers
+    if (candidateDays.length >= 14) {
       headerRowIdx = r;
-      // Sort by day number
       candidateDays.sort((a, b) => a.day - b.day);
       dayColMap.push(...candidateDays);
       break;
@@ -194,119 +260,252 @@ export function parseScheduleCSV(
 
   if (headerRowIdx === -1 || dayColMap.length === 0) {
     result.errors.push(
-      'Garis header nomor tanggal (1 s.d. 30/31) tidak ditemukan pada 10 baris pertama file CSV.'
+      'Baris header nomor tanggal (1 s.d. 30/31) tidak ditemukan pada file CSV.'
     );
     return result;
   }
 
   result.detectedHeaders = dayColMap;
   const detectedMaxDay = Math.max(...dayColMap.map((d) => d.day));
-  result.totalDays = Math.max(detectedMaxDay, targetDaysCount);
+  result.totalDays = Math.min(31, Math.max(detectedMaxDay, targetDaysCount));
 
   // Initialize days structure
   for (let d = 1; d <= result.totalDays; d++) {
     result.days[d] = {};
   }
 
-  // 2. Identify the Name column (usually index 1, or looking for "nama" / "petugas")
+  // 2. Identify the Name column & optional metadata columns before the first day column
   const headerRow = rows[headerRowIdx];
-  let nameColIdx = 1; // default to second column
+  const firstDayColIdx = dayColMap[0].colIdx;
 
-  const foundNameCol = headerRow.findIndex((cell) => {
-    const c = cleanString(cell);
-    return c.includes('nama') || c.includes('petugas') || c.includes('wali');
-  });
+  let nameColIdx = -1;
+  let codeColIdx = -1;
+  let genderColIdx = -1;
+  let jenjangColIdx = -1;
+  let phoneColIdx = -1;
 
-  if (foundNameCol !== -1) {
-    nameColIdx = foundNameCol;
-  } else if (dayColMap[0].colIdx > 1) {
-    nameColIdx = 1;
-  } else {
-    nameColIdx = 0;
+  for (let c = 0; c < firstDayColIdx; c++) {
+    const h = cleanString(headerRow[c] || '');
+    if (
+      nameColIdx === -1 &&
+      (h.includes('nama') || h.includes('petugas') || h.includes('wali') || h.includes('personel') || h.includes('pegawai'))
+    ) {
+      nameColIdx = c;
+    } else if (codeColIdx === -1 && (h === 'kode' || h.includes('kode petugas') || h === 'id')) {
+      codeColIdx = c;
+    } else if (genderColIdx === -1 && (h === 'jk' || h === 'lp' || h === 'l p' || h.includes('gender') || h.includes('kelamin') || h.includes('kategori'))) {
+      genderColIdx = c;
+    } else if (jenjangColIdx === -1 && (h.includes('jenjang') || h.includes('unit'))) {
+      jenjangColIdx = c;
+    } else if (phoneColIdx === -1 && (h.includes('wa') || h.includes('whatsapp') || h.includes('hp') || h.includes('telp') || h.includes('telepon'))) {
+      phoneColIdx = c;
+    }
   }
 
-  // Build searchable staff dictionary
-  const staffCleanMap = staffList.map((s) => ({
+  // Fallback heuristic if Name header wasn't explicitly labeled "Nama"
+  if (nameColIdx === -1) {
+    if (firstDayColIdx <= 1) {
+      nameColIdx = 0;
+    } else {
+      let bestCol = 1;
+      let bestScore = -1;
+      const sampleRows = rows.slice(headerRowIdx + 1, Math.min(rows.length, headerRowIdx + 8));
+      for (let c = 0; c < firstDayColIdx; c++) {
+        let score = 0;
+        sampleRows.forEach((r) => {
+          const val = (r[c] || '').trim();
+          // Ignore pure numbers or short codes like L1, P12
+          if (val && !/^\d+$/.test(val) && !/^[LP]\d+$/i.test(val) && val.length > 2) {
+            score += val.length;
+          }
+        });
+        if (score > bestScore) {
+          bestScore = score;
+          bestCol = c;
+        }
+      }
+      nameColIdx = bestCol;
+    }
+  }
+
+  // Build comprehensive known staff directory (prioritizing currentMonthStaff, then masterStaffList, then baselines)
+  const knownStaffMap = new Map<number, Staff>();
+  const registerKnownList = (list?: Staff[]) => {
+    if (!Array.isArray(list)) return;
+    list.forEach((s) => {
+      if (s && s.id && s.name && !knownStaffMap.has(s.id)) {
+        knownStaffMap.set(s.id, s);
+      }
+    });
+  };
+  registerKnownList(staffList);
+  registerKnownList(masterStaffList);
+  registerKnownList(OCTOBER_2026_STAFF_LIST);
+  registerKnownList(SEPTEMBER_2026_STAFF_LIST);
+  registerKnownList(INITIAL_STAFF_LIST);
+
+  const allKnownStaff: Staff[] = Array.from(knownStaffMap.values());
+  const currentMonthIds = new Set(staffList.map((s) => s.id));
+
+  const staffCleanMap = allKnownStaff.map((s) => ({
     staff: s,
     cleanedName: cleanString(s.name),
-    code: s.code ? cleanString(s.code) : '',
+    compactName: compactString(s.name),
     id: s.id,
   }));
 
-  // 3. Process each data row below headerRowIdx
+  // Pre-collect all compact names in CSV so fuzzy matching never steals an exact match from a later row
+  const csvCompactNamesSet = new Set<string>();
+  for (let r = headerRowIdx + 1; r < rows.length; r++) {
+    const raw = rows[r]?.[nameColIdx]?.trim() || '';
+    if (raw) {
+      csvCompactNamesSet.add(compactString(raw));
+    }
+  }
+
+  const matchedStaffIdsInCSV = new Set<number>();
+
+  // 3. Process each data row below headerRowIdx strictly by Wali Asuh Name
   for (let r = headerRowIdx + 1; r < rows.length; r++) {
     const row = rows[r];
-    if (row.length <= 1) continue;
+    if (!row || row.length <= 1) continue;
 
     const rawName = row[nameColIdx]?.trim() || '';
     if (!rawName) continue;
 
-    // Check if this row is a summary or total row
+    // Ignore pure numbers in name column or summary/footer rows
     const cleanRowName = cleanString(rawName);
+    const compactRowName = compactString(rawName);
+    if (!cleanRowName || /^\d+$/.test(cleanRowName)) continue;
+
     if (
-      cleanRowName.includes('total') ||
-      cleanRowName.includes('rekap') ||
-      cleanRowName.includes('jumlah') ||
-      cleanRowName.includes('keterangan')
+      cleanRowName.startsWith('total') ||
+      cleanRowName.startsWith('rekap') ||
+      cleanRowName.startsWith('jumlah') ||
+      cleanRowName.startsWith('keterangan') ||
+      cleanRowName.startsWith('catatan') ||
+      cleanRowName === 'nama' ||
+      cleanRowName === 'nama petugas' ||
+      cleanRowName === 'nama wali asuh' ||
+      cleanRowName.includes('total shif') ||
+      cleanRowName.includes('jumlah petugas')
     ) {
       continue;
     }
 
-    // Try matching staff
-    let matched = staffCleanMap.find((s) => s.cleanedName === cleanRowName);
+    // PASS 1: Exact normalized name match (prioritize staff already in current month if duplicate names exist)
+    let matched =
+      staffCleanMap.find(
+        (s) => !matchedStaffIdsInCSV.has(s.id) && currentMonthIds.has(s.id) && s.cleanedName === cleanRowName
+      ) ||
+      staffCleanMap.find(
+        (s) => !matchedStaffIdsInCSV.has(s.id) && s.cleanedName === cleanRowName
+      );
 
-    // Fuzzy matching fallback
+    // PASS 2: Compact name match (ignores space/apostrophe variations, e.g. "Aziz Fajar Yusniza" vs "Azizfajar Yusniza")
     if (!matched) {
-      matched = staffCleanMap.find((s) => {
-        return (
-          s.cleanedName.includes(cleanRowName) ||
-          cleanRowName.includes(s.cleanedName)
+      matched =
+        staffCleanMap.find(
+          (s) => !matchedStaffIdsInCSV.has(s.id) && currentMonthIds.has(s.id) && s.compactName === compactRowName
+        ) ||
+        staffCleanMap.find(
+          (s) => !matchedStaffIdsInCSV.has(s.id) && s.compactName === compactRowName
         );
-      });
     }
 
-    // Secondary match by Code if column 0 has 'L1', 'P1', etc.
-    if (!matched && row[0]) {
-      const codeCandidate = cleanString(row[0]);
-      matched = staffCleanMap.find((s) => s.code === codeCandidate);
-    }
+    // PASS 3: Safe multi-word token match (only if at least 2 significant words match and candidate isn't matched elsewhere in CSV)
+    if (!matched) {
+      const rowWords = cleanRowName.split(' ').filter((w) => w.length > 1);
+      if (rowWords.length >= 2) {
+        matched = staffCleanMap.find((s) => {
+          if (matchedStaffIdsInCSV.has(s.id)) return false;
+          // Do not steal a candidate whose exact compact name appears on another row of the CSV
+          if (csvCompactNamesSet.has(s.compactName)) return false;
 
-    // Secondary match by Row Number if order matches (1 to staffList.length)
-    if (!matched && row[0]) {
-      const numCandidate = parseInt(row[0].trim(), 10);
-      if (!isNaN(numCandidate) && numCandidate >= 1 && numCandidate <= staffList.length) {
-        matched = staffCleanMap[numCandidate - 1];
+          const staffWords = s.cleanedName.split(' ').filter((w) => w.length > 1);
+          if (staffWords.length < 2) return false;
+
+          const shorter = rowWords.length <= staffWords.length ? rowWords : staffWords;
+          const longer = rowWords.length <= staffWords.length ? staffWords : rowWords;
+          const allShorterInLonger = shorter.every((w) => longer.includes(w));
+          return allShorterInLonger && shorter.length >= 2;
+        });
       }
     }
 
+    let isNewForMonth = false;
+
     if (!matched) {
-      // Otomatis daftarkan petugas baru jika belum ada di database
+      // Automatically create a brand-new Wali Asuh entry from the CSV row
       const cleanRaw = rawName.trim();
       const existingIds = staffCleanMap.map((s) => s.id);
       const nextId = existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
-      const lower = cleanRaw.toLowerCase();
-      const isFemale = lower.includes('dewi') || lower.includes('putri') || lower.includes('ayu') || lower.includes('siti') || lower.includes('rina') || lower.includes('wati') || lower.includes('nur') || lower.includes('anita') || lower.includes('erna') || lower.includes('qobsoh') || lower.includes('fani') || lower.includes('maisun') || lower.includes('laili');
-      
+
+      // Determine gender from CSV gender/code columns if available, else infer from name
+      let gender: 'L' | 'P' = inferFemaleGenderFromName(cleanRaw) ? 'P' : 'L';
+      if (genderColIdx !== -1 && row[genderColIdx]) {
+        const gRaw = row[genderColIdx].trim().toUpperCase();
+        if (gRaw === 'P' || gRaw.startsWith('PEREMPUAN') || gRaw.startsWith('AKHWAT') || gRaw.startsWith('WANITA')) {
+          gender = 'P';
+        } else if (gRaw === 'L' || gRaw.startsWith('LAKI') || gRaw.startsWith('IKHWAN') || gRaw.startsWith('PRIA')) {
+          gender = 'L';
+        }
+      } else if (codeColIdx !== -1 && row[codeColIdx]) {
+        const cRaw = row[codeColIdx].trim().toUpperCase();
+        if (/^P\d+$/.test(cRaw)) gender = 'P';
+        else if (/^L\d+$/.test(cRaw)) gender = 'L';
+      }
+
+      // Determine staff code
+      let staffCode = suggestNextStaffCode(gender, staffCleanMap.map((s) => s.staff));
+      if (codeColIdx !== -1 && row[codeColIdx]) {
+        const cRaw = row[codeColIdx].trim().toUpperCase();
+        if (/^[LP]\d+$/.test(cRaw)) {
+          staffCode = cRaw;
+        }
+      }
+
+      const jenjangVal =
+        jenjangColIdx !== -1 && row[jenjangColIdx]?.trim()
+          ? row[jenjangColIdx].trim()
+          : 'SMA';
+      const phoneVal =
+        phoneColIdx !== -1 && row[phoneColIdx]?.trim()
+          ? row[phoneColIdx].trim()
+          : '';
+
       const newStaff: Staff = {
         id: nextId,
         name: cleanRaw,
         role: 'Wali Asuh',
-        gender: isFemale ? 'P' : 'L',
-        group: isFemale ? 'Petugas Perempuan' : 'Petugas Laki-laki',
-        jenjang: '-',
-        phone: '',
+        gender,
+        code: staffCode,
+        initials: generateStaffInitials(cleanRaw),
+        group: gender === 'P' ? 'Petugas Perempuan' : 'Petugas Laki-laki',
+        jenjang: jenjangVal,
+        phone: phoneVal,
+        status: 'active',
       };
-      
-      staffCleanMap.push({
+
+      const newEntry = {
         staff: newStaff,
         cleanedName: cleanRowName,
-        code: '',
+        compactName: compactRowName,
         id: nextId,
-      });
-      matched = staffCleanMap[staffCleanMap.length - 1];
+      };
+      staffCleanMap.push(newEntry);
+      matched = newEntry;
+      isNewForMonth = true;
+    } else if (!currentMonthIds.has(matched.id)) {
+      isNewForMonth = true;
     }
 
-    // Collect shifts for this staff
+    matchedStaffIdsInCSV.add(matched.id);
+    if (isNewForMonth) {
+      result.newStaffList.push(matched.staff);
+    }
+
+    // Collect shifts for this staff across all detected days
     const staffShifts: Record<number, ShiftCode> = {};
     let count = 0;
 
@@ -315,10 +514,18 @@ export function parseScheduleCSV(
       const shiftCode = normalizeShiftCode(rawShift);
       staffShifts[day] = shiftCode;
       result.days[day][matched!.id] = shiftCode;
-      if (shiftCode !== 'L') {
+      if (shiftCode !== 'L' && shiftCode !== 'O') {
         count++;
       }
     });
+
+    // Ensure all days 1..totalDays are initialized for this staff
+    for (let d = 1; d <= result.totalDays; d++) {
+      if (!result.days[d][matched.id]) {
+        result.days[d][matched.id] = 'L';
+        staffShifts[d] = 'L';
+      }
+    }
 
     result.matchedStaffList.push({
       staff: matched.staff,
@@ -326,33 +533,35 @@ export function parseScheduleCSV(
       shiftCount: count,
       rowIdx: r + 1,
       shifts: staffShifts,
-    });
-  }
-
-  // Populate final staff list including any newly added staff
-  result.finalStaffList = staffCleanMap.map((s) => s.staff);
-
-  // Fill in any days/staff that might be missing with existing schedule or default 'L'
-  for (let d = 1; d <= result.totalDays; d++) {
-    result.finalStaffList.forEach((st) => {
-      if (!result.days[d][st.id]) {
-        result.days[d][st.id] = existingDays?.[d]?.[st.id] || 'L';
-      }
+      isNewStaff: isNewForMonth,
     });
   }
 
   if (result.matchedStaffList.length === 0) {
-    result.errors.push('Tidak ada nama petugas yang cocok dengan database wali asuh.');
+    result.errors.push('Tidak ditemukan baris nama Wali Asuh yang valid di dalam file CSV.');
     return result;
   }
 
+  // Strictly set finalStaffList for this month to ONLY the staff present in the CSV (in CSV order)
+  result.finalStaffList = result.matchedStaffList.map((m) => m.staff);
+
+  // Identify staff who were previously in this month's roster but are NOT in the CSV (to be removed from this month)
+  result.removedStaffList = staffList.filter((s) => !matchedStaffIdsInCSV.has(s.id));
+
   result.success = true;
 
-  if (result.matchedStaffList.length < staffList.length) {
+  if (result.newStaffList.length > 0) {
     result.warnings.push(
-      `Berhasil mencocokkan ${result.matchedStaffList.length} dari ${staffList.length} petugas. Petugas lain otomatis diisi shif Libur (L).`
+      `+${result.newStaffList.length} Wali Asuh baru terdeteksi dari CSV dan otomatis ditambahkan ke jadwal & Kelola Wali Asuh.`
+    );
+  }
+
+  if (result.removedStaffList.length > 0) {
+    result.warnings.push(
+      `-${result.removedStaffList.length} Wali Asuh yang tidak ada di CSV otomatis dikeluarkan dari jadwal bulan ini (${result.removedStaffList.slice(0, 4).map((s) => s.name).join(', ')}${result.removedStaffList.length > 4 ? ', dll.' : ''}).`
     );
   }
 
   return result;
 }
+

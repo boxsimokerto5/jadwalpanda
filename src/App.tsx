@@ -128,14 +128,19 @@ function getInitialScheduleForMonth(year: number, month: number): MonthSchedule 
   const canonicalMonthName = INDONESIAN_MONTH_NAMES[month - 1] || 'Oktober';
   const canonicalTotalDays = new Date(year, month, 0).getDate() || 31;
   try {
-    const saved = localStorage.getItem(`wali_asuh_schedule_v16_${year}_${month}`) ||
-                  localStorage.getItem(`wali_asuh_schedule_v15_${year}_${month}`);
+    const savedV16 = localStorage.getItem(`wali_asuh_schedule_v16_${year}_${month}`);
+    const savedV15 = localStorage.getItem(`wali_asuh_schedule_v15_${year}_${month}`);
+    const saved = savedV16 || savedV15;
     if (saved) {
       const parsed = JSON.parse(saved);
       if (parsed.staffList && parsed.staffList.length > 0 && parsed.days) {
-        // If October 2026, make sure we have the complete 55 staff list
-        if (year === 2026 && month === 10 && parsed.staffList.length < OCTOBER_2026_STAFF_LIST.length) {
-          // Stale cache detected, continue to official baseline below
+        if (
+          !savedV16 &&
+          year === 2026 &&
+          month === 10 &&
+          parsed.staffList.length === SEPTEMBER_2026_STAFF_LIST.length
+        ) {
+          // Stale v15 cache detected, continue to official baseline below
         } else {
           parsed.year = year;
           parsed.month = month;
@@ -569,10 +574,12 @@ export default function App() {
             }
 
             isIncomingRemoteUpdateRef.current = true;
-            let currentStaff = (prev.staffList && prev.staffList.length > 0) ? prev.staffList : staffList;
-            if (selectedMonth.month === 10 && currentStaff.length < OCTOBER_2026_STAFF_LIST.length) {
-              currentStaff = OCTOBER_2026_STAFF_LIST;
-            }
+            const currentStaff =
+              cloudData.staffList && cloudData.staffList.length > 0
+                ? cloudData.staffList
+                : prev.staffList && prev.staffList.length > 0
+                ? prev.staffList
+                : staffList;
 
             lastSyncedScheduleHashRef.current = JSON.stringify({
               days: cloudData.days,
@@ -653,10 +660,10 @@ export default function App() {
                   return prev;
                 }
               }
-              let currentStaff = (freshSupabase.staffList && freshSupabase.staffList.length > 0) ? freshSupabase.staffList : (prev.staffList || staffList);
-              if (freshSupabase.month === 10 && currentStaff.length < OCTOBER_2026_STAFF_LIST.length) {
-                currentStaff = OCTOBER_2026_STAFF_LIST;
-              }
+              const currentStaff =
+                freshSupabase.staffList && freshSupabase.staffList.length > 0
+                  ? freshSupabase.staffList
+                  : prev.staffList || staffList;
               const resolvedDays = resolveScheduleDays(
                 freshSupabase.days,
                 freshSupabase.year,
@@ -791,7 +798,7 @@ export default function App() {
     setTimeout(() => setRefreshToast(null), 4000);
   }, []);
 
-  // Handler to import schedule from CSV and sync to state + localStorage + Supabase
+  // Handler to import schedule from CSV and sync to state + localStorage + Supabase + Master Staff List
   const handleImportSchedule = useCallback((newSched: MonthSchedule) => {
     const stampedSched: MonthSchedule = {
       ...newSched,
@@ -804,6 +811,30 @@ export default function App() {
       setSelectedMonth(newMonthObj);
       localStorage.setItem('active_schedule_month', JSON.stringify(newMonthObj));
     }
+
+    // Update Master Staff List with any newly added staff from the CSV
+    if (stampedSched.staffList && stampedSched.staffList.length > 0) {
+      setMasterStaffList((prevMaster) => {
+        const map = new Map<number, Staff>();
+        prevMaster.forEach((s) => map.set(s.id, s));
+        stampedSched.staffList!.forEach((s) => map.set(s.id, s));
+        const merged = Array.from(map.values()).sort((a, b) => a.id - b.id);
+        saveStaffListToSupabase(merged, 'Admin CSV Import').catch(() => {});
+        return merged;
+      });
+
+      // Ensure selectedStaffId remains valid if previous staff was removed in this month's CSV
+      setSelectedStaffId((prevId) => {
+        const stillExists = stampedSched.staffList!.some((s) => s.id === prevId);
+        return stillExists ? prevId : stampedSched.staffList![0].id;
+      });
+    }
+
+    lastSyncedScheduleHashRef.current = JSON.stringify({
+      days: stampedSched.days,
+      staffList: (stampedSched.staffList || []).map((s) => s.id),
+    });
+
     setSchedule(stampedSched);
     try {
       localStorage.setItem(`wali_asuh_schedule_v16_${stampedSched.year}_${stampedSched.month}`, JSON.stringify(stampedSched));
@@ -815,7 +846,7 @@ export default function App() {
     }
     saveScheduleToSupabase(stampedSched, 'Admin CSV Import').catch(console.error);
     setRefreshToast({
-      message: `Jadwal ${stampedSched.monthName} ${stampedSched.year} berhasil diimpor dan disimpan ke database!`,
+      message: `Jadwal ${stampedSched.monthName} ${stampedSched.year} (${stampedSched.staffList?.length || 0} Wali Asuh) berhasil diimpor & disinkronkan!`,
       type: 'success',
     });
     setTimeout(() => setRefreshToast(null), 4500);
@@ -928,10 +959,10 @@ export default function App() {
 
       if (supabaseData && supabaseData.days && Object.keys(supabaseData.days).length > 0) {
         isIncomingRemoteUpdateRef.current = true;
-        let currentStaff = (supabaseData.staffList && supabaseData.staffList.length > 0) ? supabaseData.staffList : schedule.staffList;
-        if (supabaseData.month === 10 && currentStaff.length < OCTOBER_2026_STAFF_LIST.length) {
-          currentStaff = OCTOBER_2026_STAFF_LIST;
-        }
+        const currentStaff =
+          supabaseData.staffList && supabaseData.staffList.length > 0
+            ? supabaseData.staffList
+            : schedule.staffList;
         const resolvedDays = resolveScheduleDays(
           supabaseData.days,
           supabaseData.year,
@@ -1236,6 +1267,7 @@ export default function App() {
                 schedule={schedule}
                 setSchedule={setSchedule}
                 staffList={staffList}
+                masterStaffList={masterStaffList}
                 selectedStaffId={selectedStaffId}
                 setSelectedStaffId={setSelectedStaffId}
                 activeDay={activeDay}
@@ -1319,6 +1351,7 @@ export default function App() {
                 onNavigateToDashboard={() => setCurrentTab('dashboard')}
                 selectedStaffId={selectedStaffId}
                 setSelectedStaffId={setSelectedStaffId}
+                onImportSchedule={handleImportSchedule}
               />
             )}
 

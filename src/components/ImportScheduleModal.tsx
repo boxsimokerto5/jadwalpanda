@@ -11,16 +11,19 @@ import {
   Eye,
   ArrowRight,
   ShieldCheck,
+  UserPlus,
+  UserMinus,
 } from 'lucide-react';
-import { MonthSchedule, Staff, ShiftCode } from '../types';
+import { MonthSchedule, Staff } from '../types';
 import { parseScheduleCSV, CSVParseResult } from '../utils/csvScheduleImport';
 import { soundManager } from '../utils/audio';
-import { saveLocalStaffList } from '../utils/staffService';
+import { getLocalStaffList, saveStaffListToSupabase } from '../utils/staffService';
 
 interface ImportScheduleModalProps {
   isOpen: boolean;
   onClose: () => void;
   staffList: Staff[];
+  masterStaffList?: Staff[];
   selectedMonth: { year: number; month: number; monthName: string };
   onApplySchedule: (updatedSchedule: MonthSchedule) => void;
 }
@@ -29,6 +32,7 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
   isOpen,
   onClose,
   staffList,
+  masterStaffList,
   selectedMonth,
   onApplySchedule,
 }) => {
@@ -46,6 +50,7 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
   if (!isOpen) return null;
 
   const targetDaysInMonth = new Date(targetYear, targetMonth, 0).getDate();
+  const effectiveMasterList = masterStaffList && masterStaffList.length > 0 ? masterStaffList : getLocalStaffList();
 
   const handleProcessCSVContent = (content: string, name?: string) => {
     setErrorMsg(null);
@@ -55,7 +60,7 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
     }
 
     try {
-      const result = parseScheduleCSV(content, staffList, targetDaysInMonth);
+      const result = parseScheduleCSV(content, staffList, targetDaysInMonth, undefined, effectiveMasterList);
       setParseResult(result);
       if (name) setFileName(name);
       if (!result.success && result.errors.length > 0) {
@@ -94,11 +99,17 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
       ];
       const targetMonthName = monthNames[targetMonth - 1] || 'Bulan';
 
-      const appliedStaffList = parseResult.finalStaffList && parseResult.finalStaffList.length > 0
-        ? parseResult.finalStaffList
-        : staffList;
+      const appliedStaffList =
+        parseResult.finalStaffList && parseResult.finalStaffList.length > 0
+          ? parseResult.finalStaffList
+          : staffList;
 
-      saveLocalStaffList(appliedStaffList);
+      // Merge any newly discovered staff from CSV into the Master Bank Data without losing existing master records
+      const mergedMasterMap = new Map<number, Staff>();
+      effectiveMasterList.forEach((s) => mergedMasterMap.set(s.id, s));
+      appliedStaffList.forEach((s) => mergedMasterMap.set(s.id, s));
+      const updatedMasterList = Array.from(mergedMasterMap.values()).sort((a, b) => a.id - b.id);
+      saveStaffListToSupabase(updatedMasterList, `Import CSV ${targetMonthName} ${targetYear}`).catch(() => {});
 
       const newSchedule: MonthSchedule = {
         year: targetYear,
@@ -132,10 +143,10 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-white leading-tight">
-                Import Jadwal Shif dari File CSV
+                Import Jadwal & Roster Wali Asuh dari CSV
               </h2>
               <p className="text-xs text-white/80">
-                Sesuaikan jadwal dengan file CSV atau tabel spreadsheet secara aman dan instan
+                Pembacaan otomatis berdasarkan Nama Wali Asuh (otomatis tambah nama baru & hapus nama yang tidak ada di CSV bulan ini)
               </p>
             </div>
           </div>
@@ -167,15 +178,16 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
                   if (rawText) {
                     const daysCount = new Date(y, m, 0).getDate();
                     try {
-                      const res = parseScheduleCSV(rawText, staffList, daysCount);
+                      const res = parseScheduleCSV(rawText, staffList, daysCount, undefined, effectiveMasterList);
                       setParseResult(res);
                     } catch {}
                   }
                 }}
                 className="text-xs font-bold bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-slate-800 dark:text-slate-100 shadow-2xs focus:ring-2 focus:ring-emerald-500 focus:outline-none"
               >
-                <option value="2026-10">Oktober 2026 (31 Hari)</option>
+                <option value="2026-8">Agustus 2026 (31 Hari)</option>
                 <option value="2026-9">September 2026 (30 Hari)</option>
+                <option value="2026-10">Oktober 2026 (31 Hari)</option>
                 <option value="2026-11">November 2026 (30 Hari)</option>
                 <option value="2026-12">Desember 2026 (31 Hari)</option>
               </select>
@@ -230,7 +242,7 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
                     Klik untuk memilih file CSV
                   </p>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Pilih file <span className="font-semibold text-emerald-700 dark:text-emerald-400">Jadwal_Shif_Wali_Asuh_Oktober_2026.csv</span> atau file CSV lainnya
+                    Pilih file <span className="font-semibold text-emerald-700 dark:text-emerald-400">Jadwal_Shif_Wali_Asuh.csv</span> (bebas jumlah Wali Asuh: 40, 55, 99, dst.)
                   </p>
                 </div>
                 {fileName && (
@@ -280,22 +292,39 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-400">
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Struktur CSV Berhasil Diverifikasi!</span>
+                  <span>Struktur CSV & Nama Wali Asuh Berhasil Diverifikasi!</span>
                 </div>
-                <div className="flex items-center gap-2 text-[11px]">
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                   <span className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-300 rounded-md font-semibold">
                     {parseResult.totalDays} Hari Terbaca
                   </span>
-                  <span className="px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 rounded-md font-semibold">
-                    {parseResult.matchedStaffList.length} Petugas Cocok
+                  <span className="px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 rounded-md font-semibold flex items-center gap-1">
+                    <Users className="w-3 h-3" />
+                    <span>{parseResult.matchedStaffList.length} Wali Asuh di CSV</span>
                   </span>
+                  {parseResult.newStaffList.length > 0 && (
+                    <span className="px-2 py-0.5 bg-teal-100 dark:bg-teal-900/60 text-teal-800 dark:text-teal-300 rounded-md font-bold flex items-center gap-1">
+                      <UserPlus className="w-3 h-3" />
+                      <span>+{parseResult.newStaffList.length} Baru</span>
+                    </span>
+                  )}
+                  {parseResult.removedStaffList.length > 0 && (
+                    <span className="px-2 py-0.5 bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 rounded-md font-bold flex items-center gap-1">
+                      <UserMinus className="w-3 h-3" />
+                      <span>-{parseResult.removedStaffList.length} Dihapus dari Bulan Ini</span>
+                    </span>
+                  )}
                 </div>
               </div>
 
               {parseResult.warnings.length > 0 && (
-                <div className="p-2.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl text-[11px] text-amber-800 dark:text-amber-300 flex items-start gap-2">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                  <span>{parseResult.warnings.join(' ')}</span>
+                <div className="p-2.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl text-[11px] text-amber-800 dark:text-amber-300 space-y-1">
+                  {parseResult.warnings.map((w, idx) => (
+                    <div key={idx} className="flex items-start gap-2">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>{w}</span>
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -304,18 +333,18 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
                 <div className="bg-slate-100 dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
                   <span className="flex items-center gap-1.5">
                     <Eye className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Pratinjau Data Shif (5 Petugas Pertama):</span>
+                    <span>Pratinjau Daftar Wali Asuh ({parseResult.matchedStaffList.length} Petugas):</span>
                   </span>
                   <span className="text-[11px] font-normal text-slate-500">
                     Tgl 1 s.d. {parseResult.totalDays}
                   </span>
                 </div>
-                <div className="overflow-x-auto max-h-44">
+                <div className="overflow-x-auto max-h-52">
                   <table className="w-full text-[11px] text-left">
-                    <thead className="bg-slate-50 dark:bg-slate-900/80 text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                    <thead className="bg-slate-50 dark:bg-slate-900/80 text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 sticky top-0">
                       <tr>
                         <th className="px-2 py-1.5 w-8">No</th>
-                        <th className="px-2 py-1.5 min-w-[140px]">Nama Petugas</th>
+                        <th className="px-2 py-1.5 min-w-[160px]">Nama Wali Asuh</th>
                         <th className="px-1.5 py-1.5 text-center">Tgl 1</th>
                         <th className="px-1.5 py-1.5 text-center">Tgl 2</th>
                         <th className="px-1.5 py-1.5 text-center">Tgl 3</th>
@@ -327,11 +356,18 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-                      {parseResult.matchedStaffList.slice(0, 6).map((item, idx) => (
-                        <tr key={item.staff.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                      {parseResult.matchedStaffList.map((item, idx) => (
+                        <tr key={`${item.staff.id}-${idx}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                           <td className="px-2 py-1 font-mono text-slate-400">{idx + 1}</td>
-                          <td className="px-2 py-1 font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[150px]">
-                            {item.staff.name}
+                          <td className="px-2 py-1 font-semibold text-slate-800 dark:text-slate-200 max-w-[190px]">
+                            <div className="flex items-center gap-1.5 truncate">
+                              <span className="truncate">{item.staff.name}</span>
+                              {item.isNewStaff && (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-emerald-100 dark:bg-emerald-900/70 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 shrink-0">
+                                  BARU
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="px-1.5 py-1 text-center font-mono font-bold text-blue-600 dark:text-blue-400">
                             {item.shifts[1] || '-'}
@@ -366,11 +402,20 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
               <div className="flex items-center gap-2 p-2.5 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-xl text-[11px] text-blue-800 dark:text-blue-300">
                 <ShieldCheck className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
                 <span>
-                  <strong>Aman & Terisolasi:</strong> Penerapan ini hanya memperbarui data bulan{' '}
+                  <strong>Sinkronisasi Roster & Jadwal Otomatis:</strong> Daftar Wali Asuh pada{' '}
                   <strong>
-                    {targetMonth === 10 ? 'Oktober 2026' : `Bulan ${targetMonth} ${targetYear}`}
-                  </strong>
-                  . Jadwal bulan September 2026 dan bulan lainnya tetap utuh tanpa perubahan.
+                    {targetMonth === 10
+                      ? 'Oktober 2026'
+                      : targetMonth === 9
+                      ? 'September 2026'
+                      : targetMonth === 11
+                      ? 'November 2026'
+                      : targetMonth === 12
+                      ? 'Desember 2026'
+                      : `Bulan ${targetMonth} ${targetYear}`}
+                  </strong>{' '}
+                  di Matriks Jadwal dan Menu Kelola Wali Asuh akan langsung disesuaikan menjadi tepat{' '}
+                  <strong>{parseResult.matchedStaffList.length} Wali Asuh</strong> sesuai CSV ini. Bulan lainnya tetap aman tanpa perubahan.
                 </span>
               </div>
             </div>
@@ -396,7 +441,9 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
             }`}
           >
             <span>
-              {isProcessing ? 'Menerapkan Jadwal...' : `Terapkan ke ${targetMonth === 10 ? 'Oktober 2026' : `Bulan ${targetMonth}`}`}
+              {isProcessing
+                ? 'Menerapkan Jadwal...'
+                : `Terapkan (${parseResult?.matchedStaffList.length || 0} Wali Asuh)`}
             </span>
             <ArrowRight className="w-4 h-4" />
           </button>
@@ -405,3 +452,4 @@ export const ImportScheduleModal: React.FC<ImportScheduleModalProps> = ({
     </div>
   );
 };
+

@@ -21,6 +21,7 @@ import {
   ChevronRight,
   RotateCcw,
   Sparkles,
+  Upload,
 } from 'lucide-react';
 import { Staff, MonthSchedule, ShiftCode } from '../types';
 import {
@@ -37,6 +38,7 @@ import {
 import { soundManager } from '../utils/audio';
 import { INDONESIAN_MONTH_NAMES } from '../utils/scheduler';
 import { saveScheduleToSupabase } from '../utils/supabaseService';
+import { ImportScheduleModal } from './ImportScheduleModal';
 
 interface StaffManagementViewProps {
   schedule: MonthSchedule;
@@ -49,6 +51,7 @@ interface StaffManagementViewProps {
   onNavigateToDashboard: () => void;
   selectedStaffId: number;
   setSelectedStaffId: (id: number) => void;
+  onImportSchedule?: (newSchedule: MonthSchedule) => void;
 }
 
 export const StaffManagementView: React.FC<StaffManagementViewProps> = ({
@@ -62,6 +65,7 @@ export const StaffManagementView: React.FC<StaffManagementViewProps> = ({
   onNavigateToDashboard,
   selectedStaffId,
   setSelectedStaffId,
+  onImportSchedule,
 }) => {
   // Active view tab: 'active' (petugas bertugas di bulan ini) or 'inactive' (bank data / cuti bulan ini)
   const [activeTab, setActiveTab] = useState<'active' | 'inactive'>('active');
@@ -72,6 +76,7 @@ export const StaffManagementView: React.FC<StaffManagementViewProps> = ({
 
   // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
   const [editingStaff, setEditingStaff] = useState<Staff | null>(null);
   const [removingStaffFromMonth, setRemovingStaffFromMonth] = useState<Staff | null>(null);
   const [deletingStaffPermanent, setDeletingStaffPermanent] = useState<Staff | null>(null);
@@ -411,7 +416,7 @@ export const StaffManagementView: React.FC<StaffManagementViewProps> = ({
         </div>
 
         {/* Quick Action Navigation */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={onNavigateToMatrix}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold backdrop-blur-xs transition-colors cursor-pointer"
@@ -425,6 +430,17 @@ export const StaffManagementView: React.FC<StaffManagementViewProps> = ({
           >
             <LayoutDashboard className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Dashboard</span>
+          </button>
+          <button
+            onClick={() => {
+              setIsImportModalOpen(true);
+              soundManager.playChime();
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-400 hover:bg-teal-300 text-slate-950 text-xs font-extrabold shadow-md transition-all active:scale-95 cursor-pointer"
+            title="Unggah CSV untuk memperbarui roster & jadwal Wali Asuh otomatis berdasarkan Nama"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span>Import CSV Roster</span>
           </button>
           <button
             onClick={handleOpenAddModal}
@@ -1269,6 +1285,25 @@ export const StaffManagementView: React.FC<StaffManagementViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* MODAL 5: Import CSV Jadwal & Roster Wali Asuh */}
+      <ImportScheduleModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        staffList={currentMonthStaff}
+        masterStaffList={masterStaffList}
+        selectedMonth={selectedMonth}
+        onApplySchedule={(newSched) => {
+          if (onImportSchedule) {
+            onImportSchedule(newSched);
+          } else {
+            setSchedule(newSched);
+          }
+          showToast(
+            `Roster & Jadwal ${newSched.monthName} ${newSched.year} berhasil diperbarui (${newSched.staffList?.length || 0} Wali Asuh)!`
+          );
+        }}
+      />
     </div>
   );
 };
